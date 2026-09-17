@@ -46,6 +46,9 @@ EXPECTED_TABLES = {
     "cyclone_events",
     "siat_assessments",
     "user_alert_states",
+    "subscriptions",
+    "subscription_events",
+    "family_members",
 }
 
 
@@ -58,6 +61,10 @@ EXPECTED_TABLES = {
 # Contrato de mantenimiento: si agregas un ADD COLUMN del que dependa una feature,
 # agrégalo aquí también.
 EXPECTED_COLUMNS = {
+    "subscriptions": {
+        "billing_period", "payment_provider", "cancel_at_period_end",
+        "stripe_customer_id", "stripe_subscription_id", "updated_at",
+    },
     "users": {
         "phone", "display_name", "email",
         "first_name", "last_name", "address_1", "address_2",

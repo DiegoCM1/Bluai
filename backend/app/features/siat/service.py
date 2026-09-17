@@ -313,10 +313,14 @@ async def _push_per_user(
         msg = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
             data=data,
-            android=messaging.AndroidConfig(priority="high"),
-            # Alerta de ciclón: tiene que sonar y tiene que poder atravesar Focus /
-            # No Molestar. Antes solo mandaba el header de prioridad, o sea que
-            # llegaba muda y la retenía el modo Sueño.
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="sos_emergency",
+                    default_vibrate_timings=False,
+                    vibrate_timings_millis=[0, 250, 250, 250],
+                ),
+            ),
             apns=build_apns_config(interruption_level="time-sensitive"),
             tokens=tokens,
         )
@@ -411,8 +415,14 @@ async def _push_smn_for_alert(
             "alertTitle": smn_title,
             "alertMessage": smn_body,
         },
-        android=messaging.AndroidConfig(priority="high"),
-        # Mismo razonamiento que el push por usuario de arriba.
+        android=messaging.AndroidConfig(
+            priority="high",
+            notification=messaging.AndroidNotification(
+                channel_id="sos_emergency",
+                default_vibrate_timings=False,
+                vibrate_timings_millis=[0, 250, 250, 250],
+            ),
+        ),
         apns=build_apns_config(interruption_level="time-sensitive"),
         tokens=all_tokens,
     )

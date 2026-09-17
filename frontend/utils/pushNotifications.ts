@@ -509,7 +509,7 @@ export function setForegroundNotificationHandler() {
       const isCritical =
         data?.fullScreen === "true" ||
         data?.category === "sos" ||
-        Number(data?.level ?? data?.siat_level ?? 0) >= 4;
+        Number(data?.level ?? data?.siat_level ?? data?.alertLevel ?? 0) >= 4;
 
       return {
         shouldPlaySound: isCritical,
@@ -533,6 +533,12 @@ export function setForegroundNotificationHandler() {
 
     if (data?.category === "sos" || data?.category === "sos_invite" || data?.category === "sos_rejected" || data?.category === "sos_contact_added") {
       console.log('[QA_NOTIF] skip toast for', data.category, '— handled by _layout.tsx');
+      return;
+    }
+
+    const levelNum = Number(data?.level ?? data?.siat_level ?? data?.alertLevel ?? 0);
+    if (levelNum >= 2) {
+      console.log('[QA_NOTIF] foreground system banner enabled | title:', title ?? 'none', '| alertId:', data?.alertId ?? 'none');
       return;
     }
 

@@ -12,6 +12,9 @@ export default function BillingToggle({ plan, billingPeriod, onBillingChange }: 
   const isMonthly = billingPeriod === 'monthly';
   const isAnnual = billingPeriod === 'annual';
 
+  const monthlyLabel = plan.monthlyPrice != null ? `$${plan.monthlyPrice.toFixed(2)}` : 'Gratis';
+  const annualLabel = plan.annualPrice != null ? `$${plan.annualPrice.toFixed(2)}` : 'Gratis';
+
   return (
     <View style={{ flexDirection: 'row' }}>
       {/* Monthly */}
@@ -39,7 +42,7 @@ export default function BillingToggle({ plan, billingPeriod, onBillingChange }: 
           </View>
         </View>
         <Text style={{ fontFamily: fonts.poppinsSemiBold, color: 'white', fontSize: 20 }}>
-          ${plan.monthlyPrice.toFixed(2)}
+          {monthlyLabel}
         </Text>
         <Text style={{ fontFamily: fonts.poppins, color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>
           Facturación mensual
@@ -69,14 +72,16 @@ export default function BillingToggle({ plan, billingPeriod, onBillingChange }: 
           }}>
             {isAnnual && <View style={{ width: 7, height: 7, borderRadius: 4, backgroundColor: 'white' }} />}
           </View>
-          <View style={{ backgroundColor: `${colors.brandBlue}30`, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
-            <Text style={{ fontFamily: fonts.poppinsSemiBold, color: colors.brandCyan, fontSize: 11 }}>
-              Ahorra {plan.annualDiscount}%
-            </Text>
-          </View>
+          {plan.annualDiscount > 0 && (
+            <View style={{ backgroundColor: `${colors.brandBlue}30`, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 }}>
+              <Text style={{ fontFamily: fonts.poppinsSemiBold, color: colors.brandCyan, fontSize: 11 }}>
+                Ahorra {plan.annualDiscount}%
+              </Text>
+            </View>
+          )}
         </View>
         <Text style={{ fontFamily: fonts.poppinsSemiBold, color: 'white', fontSize: 20 }}>
-          ${plan.annualPrice.toFixed(2)}
+          {annualLabel}
         </Text>
         <Text style={{ fontFamily: fonts.poppins, color: 'rgba(255,255,255,0.6)', fontSize: 13 }}>
           Facturación anual

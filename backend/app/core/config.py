@@ -26,6 +26,20 @@ class Settings(BaseSettings):
     # no code change. Default basic to stretch the free-tier monthly quota.
     TAVILY_SEARCH_DEPTH: str = "basic"
 
+    # Payments — Stripe (optional; omit to disable checkout)
+    STRIPE_SECRET_KEY: str = ""
+    STRIPE_WEBHOOK_SECRET: str = ""
+    STRIPE_PRICE_SAFE_MONTHLY: str = ""
+    STRIPE_PRICE_SAFE_ANNUAL: str = ""
+    STRIPE_PRICE_GUARD_MONTHLY: str = ""
+    STRIPE_PRICE_GUARD_ANNUAL: str = ""
+    # Optional public origin used in checkout return URLs. Leave empty to use
+    # the origin of the request, which keeps staging and production separate.
+    PAYMENTS_PUBLIC_URL: str = ""
+
+    # Payments — MercadoPago (optional; omit to disable)
+    MP_ACCESS_TOKEN: str = ""
+
     # Dev-only bypasses
     DEV_BYPASS_MAP_EVENTS_AUTH: bool = False
 

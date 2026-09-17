@@ -23,6 +23,7 @@
     "dayjs": "^1.11.13",
     "expo": "^54.0.0",
     "expo-apple-authentication": "~8.0.8",
+    "expo-audio": "~1.1.1",
     "expo-build-properties": "~1.0.10",
     "expo-constants": "~18.0.13",
     "expo-contacts": "~15.0.11",

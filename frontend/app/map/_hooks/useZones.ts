@@ -90,6 +90,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
   // Reads straight from the cache, so it needs no coordinates.
   const reloadFromCache = useCallback(async () => {
     const cached = await readCachedZones()
+    console.log(`[Zones] state <- cache: ${cached.length} zones`)
     setZones(cached)
     return cached
   }, [])
@@ -101,7 +102,13 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
     let active = true
     ;(async () => {
       const cached = await readCachedZones()
-      if (!active || hasFreshData.current) return
+      if (!active || hasFreshData.current) {
+        console.log(
+          `[Zones] cache prime SKIPPED (active=${active}, hasFreshData=${hasFreshData.current}) — ${cached.length} cached zones not applied`,
+        )
+        return
+      }
+      console.log(`[Zones] cache primed with ${cached.length} zones`)
       if (cached.length > 0) {
         setZones(cached)
         setIsStale(true)
@@ -155,7 +162,11 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
       } catch (error) {
         // Keep whatever the cache gave us and stay marked stale, so the UI can say so
         // instead of silently presenting old data as current.
-        console.warn('[Map] Zone refresh failed, keeping cached zones:', error)
+        console.warn(
+          `[Zones] refresh FAILED (unreachable=${isUnreachable(error)}, status=${
+            error instanceof MapHttpError ? error.status : 'n/a'
+          }): ${error instanceof Error ? error.message : String(error)}`,
+        )
         if (isUnreachable(error)) reportReachability(false)
         if (isMountedRef.current) setIsStale(true)
       }
@@ -175,6 +186,9 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         result.droppedCreates.length +
         result.updated.length +
         result.deleted.length
+      console.log(
+        `[Zones] flush: ${result.created.length} created, ${result.droppedCreates.length} dropped, ${result.updated.length} updated, ${result.deleted.length} deleted, ${result.remaining} still queued`,
+      )
       if (touched === 0) {
         setPendingCount(result.remaining)
         return

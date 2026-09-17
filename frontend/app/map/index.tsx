@@ -874,10 +874,10 @@ export default function WeatherMapNativewind({
 
   const doSendSOS = async () => {
     setIsSosSending(true);
+    let lat: number | undefined;
+    let lon: number | undefined;
     try {
       // 1. Obtener GPS primero (funciona sin internet)
-      let lat: number | undefined;
-      let lon: number | undefined;
       let gpsFailed = false;
       let permDenied = false;
       let usedFallbackCoords = false;
@@ -990,16 +990,35 @@ export default function WeatherMapNativewind({
         return;
       }
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       setHasPendingSOS(false);
-      if (data.notified_count === 0) {
+      if (data?.notified_count === 0) {
         toast.info("SOS enviado", {
           description:
             "No tienes contactos vinculados. Agrégalos en tu perfil.",
         });
       } else {
         toast.success("SOS enviado", {
-          description: `${data.notified_count} contacto(s) notificado(s).`,
+          description:
+            data?.notified_count != null
+              ? `${data.notified_count} contacto(s) notificado(s).`
+              : "Tus contactos fueron notificados.",
+        });
+      }
+    } catch (error) {
+      console.error("[Map] Unexpected SOS failure:", error);
+      try {
+        await enqueueSOS(lat, lon);
+        setHasPendingSOS(true);
+        toast.info("SOS guardado", {
+          description: "Se enviará cuando recuperes conexión.",
+        });
+      } catch (queueError) {
+        // Ni enviar ni guardar. Único caso que hay que decir claro y sin adornos:
+        // creer que un SOS salió cuando no salió es el peor final posible aquí.
+        console.error("[Map] Failed to queue SOS after failure:", queueError);
+        toast.error("SOS no enviado", {
+          description: "No se pudo enviar ni guardar. Intenta de nuevo.",
         });
       }
     } finally {

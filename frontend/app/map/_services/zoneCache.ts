@@ -47,8 +47,22 @@ async function readRaw(): Promise<CachedZone[]> {
     if (!Array.isArray(parsed)) return []
 
     const now = Date.now()
-    return parsed
-      .filter(isUsable)
+    const usable = parsed.filter(isUsable)
+    if (usable.length !== parsed.length) {
+      console.warn(
+        `[MapCache] dropped ${parsed.length - usable.length} unusable entr(ies) of ${parsed.length}`,
+        parsed
+          .filter((e: CachedZone) => !isUsable(e))
+          .map((e: CachedZone) => ({
+            id: e?.id,
+            type: e?.type,
+            lat: e?.latitude,
+            lon: e?.longitude,
+            pending: e?.pending,
+          })),
+      )
+    }
+    return usable
       .map((entry: CachedZone) => ({
         // Re-normalize on every read. Entries were written as plain JSON by whatever
         // version of the app stored them, so field-for-field they may not match the
@@ -76,9 +90,17 @@ async function readRaw(): Promise<CachedZone[]> {
         reportedAt: entry.reportedAt,
         cachedAt: entry.cachedAt ?? now,
       }))
-      .filter((zone) => !isExpired(zone, now))
+      .filter((zone) => {
+        if (!isExpired(zone, now)) return true
+        console.warn(
+          `[MapCache] evicted expired zone ${zone.id} (pending=${!!zone.pending}, age=${Math.round(
+            (now - (zone.cachedAt ?? 0)) / 1000,
+          )}s)`,
+        )
+        return false
+      })
   } catch (error) {
-    console.error('[Map] Error reading zone cache:', error)
+    console.error('[MapCache] read failed, returning empty:', error)
     return []
   }
 }
@@ -95,15 +117,21 @@ async function writeRaw(zones: CachedZone[]): Promise<void> {
         .slice(0, Math.max(0, MAX_ENTRIES - pending.length))
       next = [...pending, ...confirmed]
     }
+    console.log(
+      `[MapCache] write ${next.length} zones (${next.filter((z) => z.pending).length} pending)`,
+    )
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(next))
   } catch (error) {
-    console.error('[Map] Error writing zone cache:', error)
+    console.error('[MapCache] write FAILED — zones may be lost:', error)
   }
 }
 
 /** Every usable cached zone, normalized and unexpired. Needs no coordinates. */
 export async function readCachedZones(): Promise<Zone[]> {
   const zones = await readRaw()
+  console.log(
+    `[MapCache] read ${zones.length} zones (${zones.filter((z) => z.pending).length} pending)`,
+  )
   return zones.map(({ cachedAt, ...zone }) => zone)
 }
 
@@ -142,6 +170,10 @@ export async function writeFetchedZones(
     return distance > radiusMeters
   })
 
+  const dropped = existing.length - preserved.length
+  console.log(
+    `[MapCache] merge: ${fetched.length} fetched, ${preserved.length} preserved outside ${radiusKm}km, ${dropped} superseded/removed`,
+  )
   await writeRaw([...preserved, ...fetched.map((zone) => ({ ...zone, cachedAt: now }))])
 }
 

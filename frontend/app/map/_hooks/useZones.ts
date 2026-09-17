@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useFocusEffect } from 'expo-router'
 import { toast } from 'sonner-native'
 
 import { useNetwork } from '../../../features/network/NetworkContext'
@@ -35,6 +36,10 @@ type UseZonesOptions = {
 
 const OFFLINE_SAVE_DESCRIPTION = 'Se enviará cuando recuperes conexión.'
 
+// Below this, a new GPS reading is treated as the same place and does not trigger a
+// refetch. The display radius is 100 km, so a few hundred metres changes nothing.
+const REFETCH_MIN_MOVE_METERS = 500
+
 // The backend distinguishes five vote failures (map_events/service.py). The map used to
 // show "debes estar cerca del evento" for all of them — and for network errors too.
 function voteErrorMessage(error: MapHttpError, value: 1 | -1): string {
@@ -54,7 +59,7 @@ function voteErrorMessage(error: MapHttpError, value: 1 | -1): string {
 }
 
 export default function useZones({ userLocation, getVoterLocation }: UseZonesOptions) {
-  const { isOnline, onReconnect } = useNetwork()
+  const { isOnline, onReconnect, reportReachability } = useNetwork()
 
   const [zones, setZones] = useState<Zone[]>([])
   const [selectedZone, setSelectedZone] = useState<Zone | null>(null)
@@ -64,6 +69,19 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
   // Guards the cache-priming effect against clobbering fresher network data that landed
   // first — on a warm start the fetch can beat AsyncStorage.
   const hasFreshData = useRef(false)
+  // Read inside refreshZones so reconnecting can refetch without the callback identity
+  // depending on userLocation (which would resubscribe the reconnect listener on every
+  // GPS update).
+  const userLocationRef = useRef(userLocation)
+  userLocationRef.current = userLocation
+  const lastFetchCenter = useRef<Coords | null>(null)
+  const isMountedRef = useRef(true)
+  useEffect(
+    () => () => {
+      isMountedRef.current = false
+    },
+    [],
+  )
 
   const refreshPendingCount = useCallback(async () => {
     setPendingCount((await getMapQueue()).length)
@@ -95,21 +113,42 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
     }
   }, [refreshPendingCount])
 
-  // 2. Refresh from the network once we know where the user is.
-  useEffect(() => {
-    if (!userLocation) return
-    let active = true
-    ;(async () => {
+  // 2. Refresh from the network. Callable from anywhere — not just when userLocation
+  //    changes — because regaining connectivity has to be able to trigger it too.
+  const refreshZones = useCallback(
+    async ({ force = false }: { force?: boolean } = {}) => {
+      const location = userLocationRef.current
+      if (!location) return
+
+      // GPS reports twice on startup (cached seed, then precise fix), usually metres
+      // apart. Without this guard that is two full 100 km fetches on every launch.
+      const previous = lastFetchCenter.current
+      if (
+        !force &&
+        previous &&
+        distanceInMeters(
+          previous.latitude,
+          previous.longitude,
+          location.latitude,
+          location.longitude,
+        ) < REFETCH_MIN_MOVE_METERS
+      ) {
+        return
+      }
+
       try {
         const fetched = await fetchZones({
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
+          latitude: location.latitude,
+          longitude: location.longitude,
         })
-        if (!active) return
         // Merge rather than replace — see writeFetchedZones. Re-reading afterwards is
         // what keeps queued local reports on the map alongside the server's answer.
-        await writeFetchedZones(fetched, userLocation, MAP_EVENT_RADIUS_KM)
-        if (!active) return
+        await writeFetchedZones(fetched, location, MAP_EVENT_RADIUS_KM)
+        // Only recorded on success, so a failed fetch is always retried.
+        lastFetchCenter.current = location
+        // A response arrived: definitively online, whatever the native flags claim.
+        reportReachability(true)
+        if (!isMountedRef.current) return
         hasFreshData.current = true
         await reloadFromCache()
         setIsStale(false)
@@ -117,13 +156,17 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         // Keep whatever the cache gave us and stay marked stale, so the UI can say so
         // instead of silently presenting old data as current.
         console.warn('[Map] Zone refresh failed, keeping cached zones:', error)
-        if (active) setIsStale(true)
+        if (isUnreachable(error)) reportReachability(false)
+        if (isMountedRef.current) setIsStale(true)
       }
-    })()
-    return () => {
-      active = false
-    }
-  }, [userLocation, reloadFromCache])
+    },
+    [reloadFromCache, reportReachability],
+  )
+
+  useEffect(() => {
+    if (!userLocation) return
+    refreshZones()
+  }, [userLocation, refreshZones])
 
   const applyFlushResult = useCallback(
     async (result: MapFlushResult) => {
@@ -168,12 +211,35 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
   //    and on every reconnect — the latter is new: until now the only triggers were
   //    screen focus and app foregrounding, so a user watching the map as signal returned
   //    kept an undelivered report indefinitely.
-  useEffect(() => {
-    flushQueue()
-    return onReconnect(() => {
-      flushQueue()
-    })
-  }, [flushQueue, onReconnect])
+  const recoverNow = useCallback(async () => {
+    // Order matters: push our queued writes first, THEN refetch, so the response already
+    // contains them and cannot momentarily contradict what is on screen. The refetch is
+    // forced — the user has not moved, but the data is stale by virtue of the outage,
+    // which is exactly the case the distance guard would otherwise skip.
+    await flushQueue()
+    await refreshZones({ force: true })
+  }, [flushQueue, refreshZones])
+
+  // Subscription only — no call on mount, because the focus effect below already fires
+  // on first focus and a forced refresh here would duplicate its fetch.
+  useEffect(
+    () =>
+      onReconnect(() => {
+        recoverNow()
+      }),
+    [recoverNow, onReconnect],
+  )
+
+  // Second trigger, on purpose. The reconnect edge is the fast path but it is not
+  // reliable on its own: if the OFFLINE edge is ever missed, the recovery stops being a
+  // transition and onReconnect never fires at all, stranding queued writes with no
+  // retry. Re-checking on focus is how sosQueue has always worked, and it means a
+  // missed edge costs a screen visit rather than the whole recovery path.
+  useFocusEffect(
+    useCallback(() => {
+      recoverNow()
+    }, [recoverNow]),
+  )
 
   const selectZone = useCallback((zone: Zone | null) => setSelectedZone(zone), [])
 
@@ -226,12 +292,13 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
           return
         }
 
+        reportReachability(false)
         await enqueueMapWrite({ kind: 'create', clientZoneId, zone: withAddress })
         await refreshPendingCount()
         toast.success('Reporte guardado', { description: OFFLINE_SAVE_DESCRIPTION })
       }
     },
-    [refreshPendingCount],
+    [refreshPendingCount, reportReachability],
   )
 
   const voteOnZone = useCallback(
@@ -254,6 +321,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         })
       } catch (error) {
         if (isUnreachable(error)) {
+          reportReachability(false)
           await enqueueMapWrite({
             kind: 'vote',
             zoneId,
@@ -271,7 +339,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         })
       }
     },
-    [getVoterLocation, refreshPendingCount],
+    [getVoterLocation, refreshPendingCount, reportReachability],
   )
 
   const editZone = useCallback(
@@ -291,6 +359,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         await upsertCachedZone(saved)
       } catch (error) {
         if (isUnreachable(error)) {
+          reportReachability(false)
           await upsertCachedZone(updated)
           await enqueueMapWrite({ kind: 'update', zoneId: zone.id, description: trimmed })
           await refreshPendingCount()
@@ -304,7 +373,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         toast.error('Error al editar', { description: 'No se pudo guardar el cambio' })
       }
     },
-    [refreshPendingCount],
+    [refreshPendingCount, reportReachability],
   )
 
   const removeZone = useCallback(
@@ -317,6 +386,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         await removeCachedZone(deleted.id)
       } catch (error) {
         if (isUnreachable(error)) {
+          reportReachability(false)
           await removeCachedZone(deleted.id)
           await enqueueMapWrite({ kind: 'delete', zoneId: deleted.id })
           await refreshPendingCount()
@@ -328,7 +398,7 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
         toast.error('Error al eliminar', { description: 'No se pudo eliminar la zona' })
       }
     },
-    [refreshPendingCount],
+    [refreshPendingCount, reportReachability],
   )
 
   // `canVote`, `withinVotingRadius` and `distanceKm` are computed BY THE SERVER, for the

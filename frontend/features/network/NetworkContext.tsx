@@ -8,6 +8,7 @@ import {
   useState,
   type ReactNode,
 } from 'react'
+import { AppState } from 'react-native'
 import * as Network from 'expo-network'
 
 type NetworkContextValue = {
@@ -21,6 +22,18 @@ type NetworkContextValue = {
    * anything that must also run on mount has to call it itself.
    */
   onReconnect: (callback: () => void) => () => void
+  /**
+   * Correct the state from a real request outcome.
+   *
+   * expo-network's flags are advisory: `isConnected` and `isInternetReachable` are both
+   * optional, and Android reports `isInternetReachable: undefined` intermittently, which
+   * the cold-start rule below has to treat as online. When that guess is wrong the app
+   * misses the offline edge — and then the ONLINE edge too, because a missed drop means
+   * the recovery is no longer a transition, which silently disables every reconnect
+   * subscriber. A request that actually succeeded or actually failed to reach the server
+   * is ground truth, so callers report it here.
+   */
+  reportReachability: (reachable: boolean) => void
 }
 
 const NetworkContext = createContext<NetworkContextValue | null>(null)
@@ -45,8 +58,7 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   // close over a stale value for the life of the app.
   const isOnlineRef = useRef(true)
 
-  const applyState = useCallback((state: Network.NetworkState) => {
-    const next = isStateOnline(state)
+  const setOnline = useCallback((next: boolean) => {
     if (next === isOnlineRef.current) return
     isOnlineRef.current = next
     setIsOnline(next)
@@ -65,22 +77,43 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const applyState = useCallback(
+    (state: Network.NetworkState) => setOnline(isStateOnline(state)),
+    [setOnline],
+  )
+
+  const reportReachability = useCallback(
+    (reachable: boolean) => setOnline(reachable),
+    [setOnline],
+  )
+
   useEffect(() => {
     let cancelled = false
 
-    Network.getNetworkStateAsync()
-      .then((state) => {
-        if (!cancelled) applyState(state)
-      })
-      .catch(() => {
-        // A failed read tells us nothing about connectivity — stay optimistic rather
-        // than declaring the app offline because a native call misbehaved.
-      })
+    const readNow = () => {
+      Network.getNetworkStateAsync()
+        .then((state) => {
+          if (!cancelled) applyState(state)
+        })
+        .catch(() => {
+          // A failed read tells us nothing about connectivity — stay optimistic rather
+          // than declaring the app offline because a native call misbehaved.
+        })
+    }
 
+    readNow()
     const subscription = Network.addNetworkStateListener(applyState)
+    // Safety net for a missed native event. The listener is the fast path, but a drop it
+    // fails to deliver would otherwise persist until something else corrects it — and a
+    // missed drop also swallows the next recovery, since that stops being a transition.
+    const appStateSub = AppState.addEventListener('change', (status) => {
+      if (status === 'active') readNow()
+    })
+
     return () => {
       cancelled = true
       subscription.remove()
+      appStateSub.remove()
     }
   }, [applyState])
 
@@ -92,8 +125,8 @@ export function NetworkProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const value = useMemo(
-    () => ({ isOnline, lastChangedAt, onReconnect }),
-    [isOnline, lastChangedAt, onReconnect],
+    () => ({ isOnline, lastChangedAt, onReconnect, reportReachability }),
+    [isOnline, lastChangedAt, onReconnect, reportReachability],
   )
 
   return <NetworkContext.Provider value={value}>{children}</NetworkContext.Provider>

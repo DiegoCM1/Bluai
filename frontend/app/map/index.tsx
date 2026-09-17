@@ -35,6 +35,7 @@ import {
 } from "./service";
 import useZones from "./_hooks/useZones";
 import { useNetwork } from "../../features/network/NetworkContext";
+import { useAuth } from "../../features/auth/AuthContext";
 import { darkMapStyle } from "./mapStyle";
 import { colorForLevel as siatColorForLevel } from "../../utils/siatLevels";
 import {
@@ -397,10 +398,17 @@ export default function WeatherMapNativewind({
   // temporal dead zone and throw. `isOnline` is used only for banner wording, since
   // useZones collapses "offline" and "refresh failed" into one isStale flag.
   const { isOnline, onReconnect } = useNetwork();
+  // Gates the cyclone fetch: authFetch throws before touching the network when there is
+  // no Firebase session, and on a cold start this screen focuses first.
+  const { user } = useAuth();
   const [linkedContactCount, setLinkedContactCount] = useState<number | null>(
     null,
   );
   const [activeCyclones, setActiveCyclones] = useState<ActiveCyclone[]>([]);
+  // Falso hasta que el servidor conteste al menos una vez. Distingue "no hay ciclones"
+  // de "no pudimos preguntar" — sin esto, una lista vacía por fallo de red, token
+  // caducado o servidor caído se presentaba como la ausencia de huracanes.
+  const [cyclonesLoaded, setCyclonesLoaded] = useState(false);
 
   // Tutorial 1. Suppressed whenever the user did not arrive here to look around:
   // a deep link from a hurricane alert or an SOS (focus* props), or an SOS still
@@ -482,12 +490,23 @@ export default function WeatherMapNativewind({
   // hasta que el usuario cierre y reabra la app.
   useFocusEffect(
     useCallback(() => {
+      // Sin sesión de Firebase no se intenta: loadActiveCyclones pasa por authFetch, que
+      // lanza 'Not authenticated' antes de tocar la red. Al arrancar en frío este efecto
+      // ganaba la carrera a onAuthStateChanged, fallaba, y el siguiente intento era el
+      // del intervalo — hasta 60s sin ciclones en un arranque perfectamente normal, y
+      // con conexión. Mismo criterio que useAlerts, que usa una clave SWR nula sin user.
+      if (!user) return;
+
       let isActive = true;
 
       const fetchCyclones = async () => {
         try {
           const cyclones = await loadActiveCyclones();
-          if (isActive) setActiveCyclones(cyclones);
+          if (!isActive) return;
+          setActiveCyclones(cyclones);
+          // Una respuesta del servidor es la ÚNICA prueba de que "no hay ciclones"
+          // significa eso y no "no se pudo consultar".
+          setCyclonesLoaded(true);
         } catch (error) {
           console.warn("[Map] Failed to load active cyclones:", error);
         }
@@ -500,7 +519,7 @@ export default function WeatherMapNativewind({
         isActive = false;
         clearInterval(interval);
       };
-    }, []),
+    }, [user]),
   );
 
   // Al volver a foreground (desde background): re-chequear cola tras flush de _layout
@@ -549,6 +568,17 @@ export default function WeatherMapNativewind({
   // this they're effectively invisible even though they're plotted correctly.
   const focusActiveCyclones = () => {
     if (activeCyclones.length === 0) {
+      // Una lista vacía sólo significa "no hay ciclones" si el servidor llegó a
+      // contestar. Antes, sin conexión / con el token caducado / durante la carrera de
+      // arranque, la app afirmaba que no había huracanes cuando simplemente no había
+      // podido preguntar — en una app de aviso temprano, el peor error posible.
+      if (!cyclonesLoaded) {
+        toast.error("No se pudo consultar", {
+          description:
+            "No hemos podido comprobar si hay ciclones activos. Revisa tu conexión.",
+        });
+        return;
+      }
       toast("Sin ciclones activos", {
         description:
           "No hay huracanes o tormentas tropicales activos en este momento.",

@@ -29,18 +29,11 @@ import useUserLocation from "./_hooks/useUserLocation";
 import { toast } from "sonner-native";
 import {
   canReportFromLocation,
-  createZone,
-  deleteZone,
   formatRelativeTime,
-  generateZoneId,
   loadActiveCyclones,
-  loadZones,
-  reverseGeocodeAddress,
-  syncCachedZones,
-  updateZone,
-  voteZone,
   type ActiveCyclone,
 } from "./service";
+import useZones from "./_hooks/useZones";
 import { darkMapStyle } from "./mapStyle";
 import { colorForLevel as siatColorForLevel } from "../../utils/siatLevels";
 import {
@@ -379,13 +372,11 @@ export default function WeatherMapNativewind({
   const [layerModalVisible, setLayerModalVisible] = useState(false);
   const mapRef = useRef<MapView>(null);
 
-  const [zones, setZones] = useState<Zone[]>([]);
   const [isAddingMode, setIsAddingMode] = useState(false);
   const [pendingLocation, setPendingLocation] = useState<{
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   const [selectedType, setSelectedType] = useState<ZoneType | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -584,22 +575,28 @@ export default function WeatherMapNativewind({
     },
   });
 
-  useEffect(() => {
-    if (!userLocation) return;
+  // Resolved lazily so the vote path never reads map-camera state directly: `region` is
+  // chrome, and having a mutation reach into it is what made handleVoteZone the widest
+  // closure in this file.
+  const getVoterLocation = useCallback(
+    () =>
+      currentCoords ??
+      userLocation ?? { latitude: region.latitude, longitude: region.longitude },
+    [currentCoords, userLocation, region.latitude, region.longitude],
+  );
 
-    (async () => {
-      try {
-        const loaded = await loadZones({
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
-        });
-        const valid = loaded.filter((z: Zone) => z.type && ZONE_TYPES[z.type]);
-        setZones(valid);
-      } catch (error) {
-        console.error("[Map] Failed to load zones:", error);
-      }
-    })();
-  }, [userLocation]);
+  const {
+    zones,
+    isStale,
+    pendingCount,
+    selectedZone,
+    selectZone,
+    createReport,
+    voteOnZone,
+    editZone,
+    removeZone,
+  } = useZones({ userLocation, getVoterLocation });
+
 
   const handleToggleAddingMode = () => {
     setIsAddingMode((prev) => !prev);
@@ -631,39 +628,16 @@ export default function WeatherMapNativewind({
   };
 
   const handleCirclePress = (zone: Zone) => {
-    setSelectedZone(zone);
+    selectZone(zone);
     setEditDescription(zone.description);
     setShowDetailModal(true);
   };
 
   const handleSaveEdit = () => {
     if (!selectedZone || !editDescription.trim()) return;
-    const updated: Zone = {
-      ...selectedZone,
-      description: editDescription.trim(),
-    };
-    setZones((prev) => prev.map((z) => (z.id === updated.id ? updated : z)));
-    setSelectedZone(updated);
     setIsEditing(false);
-    updateZone(updated)
-      .then((savedZone) => {
-        setZones((prev) => {
-          const next = prev.map((z) => (z.id === savedZone.id ? savedZone : z));
-          syncCachedZones(next);
-          return next;
-        });
-        setSelectedZone(savedZone);
-      })
-      .catch((error) => {
-        console.error("[Map] Failed to update zone:", error);
-        setZones((prev) =>
-          prev.map((z) => (z.id === selectedZone.id ? selectedZone : z)),
-        );
-        setSelectedZone(selectedZone);
-        toast.error("Error al editar", {
-          description: "No se pudo guardar el cambio",
-        });
-      });
+    // Optimistic update, rollback and offline queueing all live in useZones now.
+    editZone(selectedZone, editDescription);
   };
 
   const handleDeleteZone = () => {
@@ -675,24 +649,9 @@ export default function WeatherMapNativewind({
         style: "destructive",
         onPress: () => {
           const deleted = selectedZone;
-          setZones((prev) => prev.filter((z) => z.id !== deleted.id));
           setShowDetailModal(false);
           setIsEditing(false);
-          deleteZone(deleted.id)
-            .then(() => {
-              setZones((prev) => {
-                const next = prev.filter((z) => z.id !== deleted.id);
-                syncCachedZones(next);
-                return next;
-              });
-            })
-            .catch((error) => {
-              console.error("[Map] Failed to delete zone:", error);
-              setZones((prev) => [...prev, deleted]);
-              toast.error("Error al eliminar", {
-                description: "No se pudo eliminar la zona",
-              });
-            });
+          removeZone(deleted);
         },
       },
     ]);
@@ -700,39 +659,7 @@ export default function WeatherMapNativewind({
 
   const handleVoteZone = (value: 1 | -1) => {
     if (!selectedZone) return;
-
-    const voterLocation = currentCoords ??
-      userLocation ?? {
-        latitude: region.latitude,
-        longitude: region.longitude,
-      };
-
-    voteZone(selectedZone.id, value, voterLocation)
-      .then((votedZone) => {
-        setZones((prev) => {
-          const next = prev.map((zone) =>
-            zone.id === votedZone.id ? votedZone : zone,
-          );
-          syncCachedZones(next);
-          return next;
-        });
-        setSelectedZone(votedZone);
-        toast.success(
-          value === 1 ? "Evento confirmado" : "Evento marcado como engañoso",
-          {
-            description: "Tu voto se registró correctamente",
-          },
-        );
-      })
-      .catch((error) => {
-        console.error("[Map] Failed to vote zone:", error);
-        toast.error("No se pudo votar", {
-          description:
-            value === 1
-              ? "Debes estar cerca del evento para confirmarlo"
-              : "Debes estar cerca del evento para marcarlo como engañoso",
-        });
-      });
+    voteOnZone(selectedZone.id, value);
   };
 
   const handleSaveZone = () => {
@@ -754,52 +681,24 @@ export default function WeatherMapNativewind({
       return;
     }
 
-    const newZone: Zone = {
-      id: generateZoneId(),
+    const report = {
       latitude: pendingLocation.latitude,
       longitude: pendingLocation.longitude,
       description: zoneDescription.trim(),
-      timestamp: new Date().toISOString(),
-      radius: 500,
       type: selectedType,
-      isOwner: true, // you created it → you own it, until the server confirms with the real record
     };
 
-    setZones((prev) => [...prev, newZone]);
     setShowAddModal(false);
     setPendingLocation(null);
     setZoneDescription("");
     setSelectedType(null);
     setDescriptionError(false);
-    toast.success("Zona reportada", { description: "Gracias por tu reporte" });
 
-    // Geocode in the background so the optimistic marker/toast appear instantly,
-    // then persist the event WITH the resolved address (null → coords fallback).
-    (async () => {
-      const address = await reverseGeocodeAddress(
-        newZone.latitude,
-        newZone.longitude,
-      );
-      if (address) {
-        setZones((prev) =>
-          prev.map((z) => (z.id === newZone.id ? { ...z, address } : z)),
-        );
-      }
-      try {
-        const savedZone = await createZone({ ...newZone, address });
-        setZones((prev) => {
-          const next = prev.map((z) => (z.id === newZone.id ? savedZone : z));
-          syncCachedZones(next);
-          return next;
-        });
-      } catch (error) {
-        console.error("[Map] Failed to save zone:", error);
-        setZones((prev) => prev.filter((z) => z.id !== newZone.id));
-        toast.error("Error al guardar", {
-          description: "No se pudo guardar la zona",
-        });
-      }
-    })();
+    // No success toast here any more. The old code claimed "Zona reportada" BEFORE the
+    // write was attempted, then contradicted itself seconds later when it failed and
+    // deleted the marker. useZones now toasts once, after the report is durable —
+    // written to the server, or queued for replay.
+    createReport(report);
   };
 
   const handleCancelAdd = () => {

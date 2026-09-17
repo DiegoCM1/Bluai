@@ -552,11 +552,29 @@ downside de un bug aquí es ruido, no una cuenta muda.
 
 No es código, pero sin esto la review se rechaza:
 
-1. **Cuenta demo para App Review.** La app entra por `AuthGate`: sin credenciales el
-   revisor **no pasa del login** y eso es rechazo automático. Crear una cuenta de prueba
-   —con onboarding ya completado y algún contacto SOS, para que la app no se vea vacía— y
-   ponerla en *App Review Information*. Google/Apple sign-in complica al revisor: si no
-   puede entrar con user+password, hay que dejar instrucciones explícitas ahí mismo.
+1. ~~**Cuenta demo para App Review.**~~ ⚠️ **REPLANTEADO 19/08 — no se crea ninguna cuenta.**
+   `AuthContext.tsx` solo expone `signInWithGoogle` y `signInWithApple`: **la app no tiene
+   formulario de usuario/contraseña**, así que los campos de demo account de ASC no tienen
+   dónde escribirse. Peor, llenarlos sería contraproducente:
+
+   - **Apple sign-in no acepta credenciales tecleadas.** La hoja está atada al Apple ID del
+     dispositivo; el revisor tendría que loguear el equipo de review con nuestra cuenta, y
+     el 2FA manda el código a *nuestros* dispositivos.
+   - **Google casi seguro lanzaría un challenge** ("verifica que eres tú") desde un
+     dispositivo/IP/país nuevos → el revisor se atora → **rechazo por Guideline 2.1**.
+   - `blueyehurricanealerts@gmail.com` es **admin de App Store Connect**. Su password no se
+     comparte con nadie, y menos por un campo de texto.
+
+   **Qué se hace en su lugar:** el revisor entra con **su propio Apple ID** vía Sign in with
+   Apple — que es justo para lo que Apple obliga a implementarlo. Se marca *Sign-In
+   Required* y la instrucción real va en **Notes**. Si ASC no deja los campos de
+   usuario/password vacíos, poner `N/A — use Sign in with Apple` y que Notes cargue el
+   significado.
+
+   > Sign in with Apple **verificado en dispositivo el 19/08** (usuario Firebase
+   > `4jhjsv78nj@privaterelay.appleid.com`, provider Apple). Como no hay fallback de
+   > email/password, que funcione es **la puerta de entrada del revisor** — si se rompe, no
+   > hay otra forma de entrar.
 
 > **Agreements/Tax/Banking NO se heredan de Play Store.** Son contratos aparte con Apple;
 > nada se transfiere. Como no hay librerías de IAP en `package.json`, basta con el

@@ -25,7 +25,7 @@ import MapView, {
   Callout,
 } from "react-native-maps";
 import * as Location from "expo-location";
-import { syncLocationToBackend } from "../../utils/locationSync";
+import useUserLocation from "./_hooks/useUserLocation";
 import { toast } from "sonner-native";
 import {
   canReportFromLocation,
@@ -378,10 +378,6 @@ export default function WeatherMapNativewind({
   const [showEvents, setShowEvents] = useState(true);
   const [layerModalVisible, setLayerModalVisible] = useState(false);
   const mapRef = useRef<MapView>(null);
-  const [userLocation, setUserLocation] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
 
   const [zones, setZones] = useState<Zone[]>([]);
   const [isAddingMode, setIsAddingMode] = useState(false);
@@ -398,10 +394,6 @@ export default function WeatherMapNativewind({
   const [zoneDescription, setZoneDescription] = useState("");
   const [descriptionError, setDescriptionError] = useState(false);
   const [isSosSending, setIsSosSending] = useState(false);
-  const [currentCoords, setCurrentCoords] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
   const [hasPendingSOS, setHasPendingSOS] = useState(false);
   const [linkedContactCount, setLinkedContactCount] = useState<number | null>(
     null,
@@ -559,81 +551,38 @@ export default function WeatherMapNativewind({
     });
   };
 
-  useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          console.warn("Location permission denied - using default region");
-          return;
-        }
-
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(
-            () => reject(new Error("Location timeout")),
-            15000,
-          );
-        });
-
-        const { coords } = await Promise.race([
-          Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          }),
-          timeoutPromise,
-        ]);
-
-        clearTimeout(timeoutId);
-
-        const userRegion = {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          latitudeDelta: 0.1,
-          longitudeDelta: 0.1,
-        };
-
-        setUserLocation({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
-        setCurrentCoords({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
-        syncLocationToBackend(coords.latitude, coords.longitude);
-        // Always update region to user location — recenter button depends on this
-        setRegion(userRegion);
-        if (focusLat != null && focusLon != null) {
-          // Neither the user's own GPS nor focusLat/focusLon are logged here —
-          // focusLat/focusLon can be a real person's GPS (SOS focus), not
-          // necessarily a public cyclone position. See the focus useEffect above.
-          console.log("[QA_MAP] GPS resolved with focus — fitToCoordinates | isSos:", focusSosPhone !== undefined);
-          mapRef.current?.fitToCoordinates(
-            [
-              { latitude: focusLat, longitude: focusLon },
-              { latitude: coords.latitude, longitude: coords.longitude },
-            ],
-            {
-              edgePadding: { top: 80, right: 60, bottom: 120, left: 60 },
-              animated: true,
-            },
-          );
-        } else {
-          mapRef.current?.animateToRegion(userRegion, 1000);
-        }
-      } catch (error) {
-        console.warn(
-          "⚠️ Could not get location (timeout or error), using default region:",
-          error.message,
+  // GPS lives in useUserLocation now. The camera decision stays HERE because it is the
+  // only part that depends on focusLat/focusLon, which belong to this screen's props.
+  const { userLocation, currentCoords } = useUserLocation({
+    onPositionFixed: (coords) => {
+      const userRegion = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        latitudeDelta: 0.1,
+        longitudeDelta: 0.1,
+      };
+      // Always update region to user location — recenter button depends on this
+      setRegion(userRegion);
+      if (focusLat != null && focusLon != null) {
+        // Neither the user's own GPS nor focusLat/focusLon are logged here —
+        // focusLat/focusLon can be a real person's GPS (SOS focus), not
+        // necessarily a public cyclone position. See the focus useEffect above.
+        console.log("[QA_MAP] GPS resolved with focus — fitToCoordinates | isSos:", focusSosPhone !== undefined);
+        mapRef.current?.fitToCoordinates(
+          [
+            { latitude: focusLat, longitude: focusLon },
+            { latitude: coords.latitude, longitude: coords.longitude },
+          ],
+          {
+            edgePadding: { top: 80, right: 60, bottom: 120, left: 60 },
+            animated: true,
+          },
         );
+      } else {
+        mapRef.current?.animateToRegion(userRegion, 1000);
       }
-    })();
-
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, []);
+    },
+  });
 
   useEffect(() => {
     if (!userLocation) return;

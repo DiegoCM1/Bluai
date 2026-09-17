@@ -1,11 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage'
 import * as Location from 'expo-location'
 
 import { API_BASE_URL } from '../../utils/config'
 import { MAP_EVENT_RADIUS_KM, REPORTING_DISTANCE_METERS } from './config'
 import type { Zone } from './types'
 
-const STORAGE_KEY = '@BluEye:redZones'
 const DEV_BYPASS_MAP_AUTH = process.env.EXPO_PUBLIC_DEV_BYPASS_MAP_AUTH === 'true'
 
 type ReporterLocation = {
@@ -202,21 +200,6 @@ export function canReportFromLocation(
   )
 }
 
-export async function loadCachedZones() {
-  try {
-    const data = await AsyncStorage.getItem(STORAGE_KEY)
-    const parsed = data ? JSON.parse(data) : []
-    return Array.isArray(parsed) ? parsed : []
-  } catch (error) {
-    console.error('[Map] Error loading cached zones:', error)
-    return []
-  }
-}
-
-async function saveCachedZones(zones: Zone[]) {
-  await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(zones))
-}
-
 // Exported for the offline write queue, which must replay requests through the SAME
 // path as a live one. Calling authFetch directly there would silently bypass
 // DEV_BYPASS_MAP_AUTH and break the dev-auth escape hatch for replayed writes only.
@@ -233,33 +216,6 @@ export async function mapFetch(path: string, options: RequestInit = {}) {
 
   const { authFetch } = await import('../../utils/api')
   return authFetch(`${API_BASE_URL}${path}`, options)
-}
-
-export async function loadZones({
-  latitude,
-  longitude,
-  radiusKm = MAP_EVENT_RADIUS_KM,
-}: LoadZonesParams) {
-  try {
-    const search = new URLSearchParams({
-      lat: String(latitude),
-      lon: String(longitude),
-      radius_km: String(radiusKm),
-    })
-
-    const response = await mapFetch(`/api/v1/map-events?${search.toString()}`)
-    if (!response.ok) {
-      throw new Error(`Failed to load map events: ${response.status}`)
-    }
-
-    const data = await response.json()
-    const zones = Array.isArray(data) ? data.map(normalizeZone) : []
-    await saveCachedZones(zones)
-    return zones
-  } catch (error) {
-    console.warn('[Map] Falling back to cached zones:', error)
-    return await loadCachedZones()
-  }
 }
 
 /**
@@ -360,14 +316,6 @@ export async function deleteZone(zoneId: string) {
 
   if (!response.ok) {
     throw await mapHttpError(response)
-  }
-}
-
-export async function syncCachedZones(zones: Zone[]) {
-  try {
-    await saveCachedZones(zones)
-  } catch (error) {
-    console.error('[Map] Error saving cached zones:', error)
   }
 }
 

@@ -34,6 +34,7 @@ import {
   type ActiveCyclone,
 } from "./service";
 import useZones from "./_hooks/useZones";
+import { useNetwork } from "../../features/network/NetworkContext";
 import { darkMapStyle } from "./mapStyle";
 import { colorForLevel as siatColorForLevel } from "../../utils/siatLevels";
 import {
@@ -338,6 +339,10 @@ const ZoneMarker = React.memo(function ZoneMarker({
         style={{
           width: zone.type === "ayuda" ? 44 : 38,
           height: zone.type === "ayuda" ? 44 : 38,
+          // Queued reports read as provisional. Safe as a static style: it is a fixed
+          // value, not a fade, so it cannot be captured mid-animation the way the
+          // fadeDuration note below describes.
+          opacity: zone.pending ? 0.55 : 1,
         }}
         resizeMode="contain"
         // Android fades images in (~300ms). Without this, tracksViewChanges freezes the
@@ -386,6 +391,12 @@ export default function WeatherMapNativewind({
   const [descriptionError, setDescriptionError] = useState(false);
   const [isSosSending, setIsSosSending] = useState(false);
   const [hasPendingSOS, setHasPendingSOS] = useState(false);
+
+  // Declared up here because the SOS reconnect effect below lists `onReconnect` in its
+  // dependency array, which is evaluated during render — a later `const` would be in its
+  // temporal dead zone and throw. `isOnline` is used only for banner wording, since
+  // useZones collapses "offline" and "refresh failed" into one isStale flag.
+  const { isOnline, onReconnect } = useNetwork();
   const [linkedContactCount, setLinkedContactCount] = useState<number | null>(
     null,
   );
@@ -501,6 +512,19 @@ export default function WeatherMapNativewind({
     });
     return () => sub.remove();
   }, []);
+
+  // Al recuperar señal: vaciar la cola de SOS de inmediato. Hasta ahora los únicos
+  // disparadores eran enfocar la pantalla y volver a primer plano, así que un usuario
+  // que se quedaba mirando el mapa mientras volvía la señal conservaba un SOS sin
+  // entregar indefinidamente — justo el caso de una emergencia con cobertura
+  // intermitente.
+  useEffect(
+    () =>
+      onReconnect(() => {
+        flushSOSQueue().then(() => hasPendingSOSItem().then(setHasPendingSOS));
+      }),
+    [onReconnect],
+  );
 
   useEffect(() => {
     if (focusLat == null || focusLon == null) return;
@@ -960,7 +984,13 @@ export default function WeatherMapNativewind({
         {showEvents &&
           zones.map((zone) => (
             <ZoneMarker
-              key={zone.id}
+              // Pending state is part of the key ON PURPOSE. ZoneMarker sets
+              // tracksViewChanges={false} once its image loads, which freezes the native
+              // bitmap — so when a queued report syncs and `pending` flips to false, the
+              // new opacity would never be painted and the marker would stay dimmed for
+              // the rest of the session. Changing the key remounts it, forcing a repaint
+              // exactly once, at the moment it syncs.
+              key={`${zone.id}:${zone.pending ? "pending" : "synced"}`}
               zone={zone}
               onPress={() => handleCirclePress(zone)}
             />
@@ -1314,6 +1344,47 @@ export default function WeatherMapNativewind({
             style={{ color: "#fff", fontFamily: fonts.poppins, fontSize: 13 }}
           >
             SOS pendiente de envío
+          </Text>
+        </View>
+      )}
+
+      {/* Datos guardados / sin conexión. Hasta ahora el mapa caía al caché en silencio
+          (service.ts devolvía lo mismo en ambos casos), así que un reporte de hace dos
+          días se veía idéntico a uno en vivo. Se coloca debajo del aviso de SOS cuando
+          ambos están visibles: ese banner está anclado en top:60 y mide ~34. */}
+      {isStale && (
+        <View
+          style={{
+            position: "absolute",
+            top: hasPendingSOS ? 104 : 60,
+            left: 16,
+            right: 16,
+            backgroundColor: colors.brandSurface + "ee",
+            borderRadius: 10,
+            paddingHorizontal: 14,
+            paddingVertical: 8,
+            flexDirection: "row",
+            alignItems: "center",
+          }}
+        >
+          <MaterialCommunityIcons
+            name={isOnline ? "cloud-alert" : "cloud-off-outline"}
+            size={16}
+            color={colors.brandYellow}
+            style={{ marginRight: 8 }}
+          />
+          <Text
+            style={{
+              color: "#fff",
+              fontFamily: fonts.poppins,
+              fontSize: 13,
+              flexShrink: 1,
+            }}
+          >
+            {isOnline
+              ? "No se pudo actualizar. Mostrando datos guardados"
+              : "Sin conexión. Mostrando datos guardados"}
+            {pendingCount > 0 ? ` · ${pendingCount} por enviar` : ""}
           </Text>
         </View>
       )}

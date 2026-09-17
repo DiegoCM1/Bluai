@@ -37,7 +37,10 @@ type MapEventResponse = {
   address?: string | null
 }
 
-function normalizeZone(event: MapEventResponse): Zone {
+// Exported so the offline cache can normalize what it reads back: cached entries were
+// written as plain JSON and come back with whatever shape the app had when it stored
+// them, not necessarily the current Zone contract.
+export function normalizeZone(event: MapEventResponse): Zone {
   return {
     id: String(event.id),
     latitude: Number(event.lat),
@@ -60,6 +63,53 @@ function normalizeZone(event: MapEventResponse): Zone {
 
 export function generateZoneId() {
   return `zone_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`
+}
+
+/**
+ * Carries the HTTP status so callers can tell a REJECTED request from an UNREACHABLE
+ * one. Without it every failure looks identical: the map used to report a network
+ * outage as "debes estar cerca del evento", and the write queue had no way to know
+ * whether retrying was pointless (4xx) or the only sensible move (5xx / offline).
+ */
+export class MapHttpError extends Error {
+  readonly status: number
+
+  constructor(status: number, message?: string) {
+    super(message || `Map request failed: ${status}`)
+    this.name = 'MapHttpError'
+    this.status = status
+  }
+}
+
+// FastAPI puts the human-readable reason in a JSON `detail` field. Pulling it out here
+// means callers can tell "you must be within 10 km" apart from "you cannot vote for your
+// own event" — the map used to show the distance message for BOTH, plus for 404, 409 and
+// every network failure.
+async function mapHttpError(response: Response): Promise<MapHttpError> {
+  const body = await response.text().catch(() => '')
+  let detail = body
+  try {
+    const parsed = JSON.parse(body)
+    if (parsed && typeof parsed.detail === 'string') detail = parsed.detail
+  } catch {
+    // Not JSON — the raw text is the best we have.
+  }
+  return new MapHttpError(response.status, detail)
+}
+
+/** A 4xx other than 429: the request itself is wrong, so replaying it cannot help. */
+export function isPermanentRejection(error: unknown): boolean {
+  return (
+    error instanceof MapHttpError &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 429
+  )
+}
+
+/** No status at all means the request never reached the server (offline, DNS, timeout). */
+export function isUnreachable(error: unknown): boolean {
+  return !(error instanceof MapHttpError)
 }
 
 const GEOCODE_TIMEOUT_MS = 5000
@@ -167,7 +217,10 @@ async function saveCachedZones(zones: Zone[]) {
   await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify(zones))
 }
 
-async function mapFetch(path: string, options: RequestInit = {}) {
+// Exported for the offline write queue, which must replay requests through the SAME
+// path as a live one. Calling authFetch directly there would silently bypass
+// DEV_BYPASS_MAP_AUTH and break the dev-auth escape hatch for replayed writes only.
+export async function mapFetch(path: string, options: RequestInit = {}) {
   if (DEV_BYPASS_MAP_AUTH) {
     return fetch(`${API_BASE_URL}${path}`, {
       ...options,
@@ -209,6 +262,29 @@ export async function loadZones({
   }
 }
 
+/**
+ * Fetch events around a point. THROWS on any failure, unlike loadZones, which silently
+ * substitutes cached data — leaving the caller unable to tell fresh data from stale and
+ * therefore unable to tell the user. The cache fallback now lives in useZones.
+ */
+export async function fetchZones({
+  latitude,
+  longitude,
+  radiusKm = MAP_EVENT_RADIUS_KM,
+}: LoadZonesParams): Promise<Zone[]> {
+  const search = new URLSearchParams({
+    lat: String(latitude),
+    lon: String(longitude),
+    radius_km: String(radiusKm),
+  })
+
+  const response = await mapFetch(`/api/v1/map-events?${search.toString()}`)
+  if (!response.ok) throw await mapHttpError(response)
+
+  const data = await response.json()
+  return Array.isArray(data) ? data.map(normalizeZone) : []
+}
+
 export async function createZone(zone: Zone) {
   const response = await mapFetch('/api/v1/map-events', {
     method: 'POST',
@@ -225,8 +301,7 @@ export async function createZone(zone: Zone) {
   })
 
   if (!response.ok) {
-    const message = await response.text().catch(() => '')
-    throw new Error(message || `Failed to create map event: ${response.status}`)
+    throw await mapHttpError(response)
   }
 
   const data = await response.json()
@@ -251,15 +326,17 @@ export async function voteZone(
   })
 
   if (!response.ok) {
-    const message = await response.text().catch(() => '')
-    throw new Error(message || `Failed to vote map event: ${response.status}`)
+    throw await mapHttpError(response)
   }
 
   const data = await response.json()
   return normalizeZone(data)
 }
 
-export async function updateZone(zone: Zone) {
+// Takes only what it sends. A full Zone still satisfies this, so live call sites are
+// unchanged, while the replay queue can pass the two fields it stored without faking
+// the rest of a Zone.
+export async function updateZone(zone: Pick<Zone, 'id' | 'description'>) {
   const response = await mapFetch(`/api/v1/map-events/${zone.id}`, {
     method: 'PATCH',
     headers: {
@@ -269,8 +346,7 @@ export async function updateZone(zone: Zone) {
   })
 
   if (!response.ok) {
-    const message = await response.text().catch(() => '')
-    throw new Error(message || `Failed to update map event: ${response.status}`)
+    throw await mapHttpError(response)
   }
 
   const data = await response.json()
@@ -283,8 +359,7 @@ export async function deleteZone(zoneId: string) {
   })
 
   if (!response.ok) {
-    const message = await response.text().catch(() => '')
-    throw new Error(message || `Failed to delete map event: ${response.status}`)
+    throw await mapHttpError(response)
   }
 }
 

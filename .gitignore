@@ -29,6 +29,9 @@ backend/**/firebase-*.json
 ###############################
 backend/venv/
 backend/.venv/
+backend/.pytest_cache/
+backend/pytest-cache-files-*/
+backend/.deploy-source/
 **/__pycache__/
 **/*.pyc
 backend/.env
@@ -70,3 +73,6 @@ $RECYCLE.BIN/
 CLAUDE.local.md
 .claude/*.local.json
 .claude/settings.local.json 
+
+# Local Android build cache
+frontend/.gradle-user-home/

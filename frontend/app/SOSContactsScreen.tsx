@@ -18,6 +18,8 @@ import { API_BASE_URL } from "../utils/config";
 import { colors, fonts } from "../utils/theme";
 import { PENDING_SOS_INVITE_KEY } from "./sos-invite/[token]";
 import { PENDING_SOS_CONTACT_ADDED_KEY } from "./_layout";
+import { getSubscription } from "./subscription/_services/subscriptionService";
+import { canAccessFeature, getCurrentPlanSlug } from "./subscription/_utils/planAccess";
 
 interface SOSContact {
   id: number; user_id: number; name: string; phone: string;
@@ -57,8 +59,44 @@ export default function SOSContactsScreen() {
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [whoHasMe, setWhoHasMe]             = useState<WhoHasMeItem[]>([]);
   const [addingReciprocal, setAddingReciprocal] = useState<number | null>(null);
+  const [blockedByPlan, setBlockedByPlan] = useState(false);
 
   const fetchAllRef = useRef<() => void>(() => {});
+
+  useEffect(() => {
+    getSubscription()
+      .then((subscription) => {
+        const plan = getCurrentPlanSlug(subscription);
+        setBlockedByPlan(!canAccessFeature(plan, 'family_panic'));
+      })
+      .catch(() => setBlockedByPlan(true));
+  }, []);
+
+  if (blockedByPlan) {
+    return (
+      <SafeAreaView className="flex-1 bg-transparent" edges={["top", "left", "right", "bottom"]}>
+        <ScreenHeader title="Contactos SOS" />
+        <View style={{ flex: 1, padding: 24, justifyContent: 'center' }}>
+          <View style={{ borderRadius: 20, padding: 20, backgroundColor: 'rgba(245,158,11,0.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)' }}>
+            <Text style={{ color: 'white', fontFamily: fonts.poppinsSemiBold, fontSize: 20, marginBottom: 10 }}>
+              Funcion bloqueada
+            </Text>
+            <Text style={{ color: 'rgba(255,255,255,0.82)', fontFamily: fonts.poppins, fontSize: 14, lineHeight: 20, marginBottom: 16 }}>
+              Los contactos SOS familiares requieren un plan Safe o Guard.
+            </Text>
+            <TouchableOpacity
+              onPress={() => router.push('/subscription')}
+              style={{ backgroundColor: colors.brandCyan, borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
+            >
+              <Text style={{ color: '#062032', fontFamily: fonts.poppinsSemiBold }}>
+                Ver suscripcion
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   // Silent push → instant refresh without waiting for 15s poll
   useEffect(() => {

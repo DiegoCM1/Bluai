@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -14,6 +14,8 @@ import { PeerList } from "./_components/PeerList";
 import { StatusHero } from "./_components/StatusHero";
 import { TechLog } from "./_components/TechLog";
 import { useLocalChatContext } from "./_context/LocalChatProvider";
+import { getSubscription } from "../subscription/_services/subscriptionService";
+import { canAccessFeature, getCurrentPlanSlug } from "../subscription/_utils/planAccess";
 
 function openChat(peerId: string, nickname: string) {
   router.push({ pathname: "/local-chat/chat", params: { peerId, nickname } });
@@ -22,6 +24,16 @@ function openChat(peerId: string, nickname: string) {
 export default function LocalChatLobbyScreen() {
   const chat = useLocalChatContext();
   const [editing, setEditing] = useState(false);
+  const [blockedByPlan, setBlockedByPlan] = useState(false);
+
+  useEffect(() => {
+    getSubscription()
+      .then((subscription) => {
+        const plan = getCurrentPlanSlug(subscription);
+        setBlockedByPlan(!canAccessFeature(plan, "bluetooth"));
+      })
+      .catch(() => setBlockedByPlan(true));
+  }, []);
 
   const connectedName =
     chat.connectedPeers.length === 1
@@ -32,6 +44,32 @@ export default function LocalChatLobbyScreen() {
 
   const inRangeIds = new Set(chat.peers.map((p) => p.deviceId));
   const connectedPeerIds = new Set(chat.connectedPeers.map((p) => p.deviceId));
+
+  if (blockedByPlan) {
+    return (
+      <SafeAreaView className="flex-1 bg-transparent" edges={["top", "bottom"]}>
+        <ScreenHeader title="Chat offline" />
+        <View className="flex-1 px-4 py-6">
+          <View className="rounded-2xl border border-amber-400/25 bg-amber-500/10 p-5">
+            <Text className="font-poppins-semibold text-xl text-white">
+              Funcion bloqueada
+            </Text>
+            <Text className="mt-3 font-poppins text-sm text-white/80">
+              El acceso Bluetooth offline requiere un plan Safe o Guard.
+            </Text>
+            <Pressable
+              onPress={() => router.push("/subscription")}
+              className="mt-5 rounded-2xl bg-cyan-500 px-4 py-4 items-center active:opacity-80"
+            >
+              <Text className="font-poppins-semibold text-slate-950">
+                Ver suscripcion
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView className="flex-1 bg-transparent" edges={["top", "bottom"]}>

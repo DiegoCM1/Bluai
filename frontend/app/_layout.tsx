@@ -164,8 +164,8 @@ function AuthGate({ children }) {
   useEffect(() => {
     if (loading) return
     if (!authEnabled) {
-      const inTabsGroup = segments[0] === '(tabs)'
-      if (!inTabsGroup) {
+      // Bypass mode: if user just logged in from auth screen, send them to tabs
+      if (user && segments[0] === '(auth)') {
         router.replace('/(tabs)/MapScreen')
       }
       return

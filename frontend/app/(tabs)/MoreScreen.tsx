@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import OptionCard from "../../components/OptionCard";
@@ -9,6 +9,8 @@ import { moreTourSteps } from "../../features/tour/moreTourSteps";
 import { MORE_TOUR_ROUTES, TOUR_IDS } from "../../features/tour/constants";
 import { useTourGate } from "../../features/tour/useTourGate";
 import { tourWarn } from "../../features/tour/tourLog";
+import { getSubscription } from "../subscription/_services/subscriptionService";
+import { canAccessFeature, getCurrentPlanSlug, type PlanSlug } from "../subscription/_utils/planAccess";
 
 const IS_DEV_BUILD =
   (process.env.EXPO_PUBLIC_API_URL ?? "").includes("staging") ||
@@ -20,6 +22,7 @@ type MenuItem = {
   label: string;
   icon: keyof typeof MaterialCommunityIcons.glyphMap;
   route: string;
+  subtitle?: string;
 };
 
 /**
@@ -42,25 +45,34 @@ export default function MoreScreen() {
 }
 
 function MoreScreenContent() {
+  const [currentPlan, setCurrentPlan] = useState<PlanSlug>("free");
+
+  useEffect(() => {
+    getSubscription()
+      .then((subscription) => setCurrentPlan(getCurrentPlanSlug(subscription)))
+      .catch(() => setCurrentPlan("free"));
+  }, []);
+
+  const hasFamilyPanic = canAccessFeature(currentPlan, "family_panic");
+  const hasBluetooth = canAccessFeature(currentPlan, "bluetooth");
+
   const items: MenuItem[] = [
     { label: "Mi Perfil", icon: "account-circle-outline", route: "/profile" },
     {
       label: "Chat offline",
       icon: "access-point-network",
       route: "/local-chat",
+      subtitle: hasBluetooth ? "Bluetooth disponible con tu plan actual" : "Requiere Safe o Guard",
     },
     {
       label: "Contactos SOS",
       icon: "account-heart-outline",
       route: "/SOSContactsScreen",
+      subtitle: hasFamilyPanic ? "Disponible con tu plan actual" : "Requiere Safe o Guard",
     },
-    {
-      label: "Feedback",
-      icon: "message-reply-outline",
-      route: "/FeedbackScreen",
-    },
+    { label: "Feedback", icon: "message-reply-outline", route: "/FeedbackScreen" },
     { label: "Ajustes", icon: "cog-outline", route: "/SettingsScreen" },
-    // { label: "Suscripción", icon: "account-group-outline", route: "/subscription" },
+    { label: "Suscripcion", icon: "account-group-outline", route: "/subscription" },
     ...(IS_DEV_BUILD
       ? [
           {
@@ -117,6 +129,7 @@ function MoreScreenContent() {
           const card = (
             <OptionCard
               title={item.label}
+              subtitle={item.subtitle}
               icon={item.icon}
               route={item.route}
             />

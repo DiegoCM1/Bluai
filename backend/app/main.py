@@ -14,6 +14,7 @@ from app.features.notification_preferences.router import router as notification_
 from app.features.sos_contacts.router import router as sos_contacts_router
 from app.features.sos_invite.router import router as sos_invite_router
 from app.features.sos_trigger.router import router as sos_trigger_router
+from app.features.payments.router import router as payments_router
 from app.features.siat.service import ensure_siat_tables, run_cycle
 from app.features.alerts.providers.smn import fetch_latest_bulletin
 from app.features.alerts.providers.smn_ciclon import fetch_active_advisories
@@ -251,6 +252,63 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
             "ON sos_contacts (linked_user_id) WHERE linked_user_id IS NOT NULL"
         ))
         await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id                      BIGSERIAL PRIMARY KEY,
+                user_id                 BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                plan_slug               VARCHAR(20) NOT NULL DEFAULT 'free',
+                stripe_customer_id      VARCHAR(100),
+                stripe_subscription_id  VARCHAR(100),
+                status                  VARCHAR(20) NOT NULL DEFAULT 'active',
+                current_period_end      TIMESTAMPTZ,
+                created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT subscriptions_user_unique UNIQUE (user_id)
+            )
+        """))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_period VARCHAR(10) NOT NULL DEFAULT 'monthly'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(20)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS subscription_events (
+                id                BIGSERIAL PRIMARY KEY,
+                user_id           BIGINT REFERENCES users(id) ON DELETE SET NULL,
+                provider          VARCHAR(20) NOT NULL,
+                event_type        VARCHAR(100) NOT NULL,
+                provider_event_id VARCHAR(255) UNIQUE,
+                processing_status VARCHAR(20) NOT NULL DEFAULT 'processing',
+                plan_slug         VARCHAR(20),
+                billing_period    VARCHAR(10),
+                amount_cents      INTEGER,
+                currency          VARCHAR(10),
+                details           JSONB NOT NULL DEFAULT '{}'::jsonb,
+                occurred_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                processed_at      TIMESTAMPTZ
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS subscription_events_user_idx "
+            "ON subscription_events (user_id, occurred_at DESC)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS family_members (
+                id              BIGSERIAL PRIMARY KEY,
+                owner_user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                member_user_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT family_members_unique UNIQUE (owner_user_id, member_user_id),
+                CONSTRAINT family_members_not_self CHECK (owner_user_id <> member_user_id)
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS family_members_owner_idx ON family_members (owner_user_id)"
+        ))
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS feedback (
                 id         BIGSERIAL PRIMARY KEY,
                 rating     INT NOT NULL CHECK (rating BETWEEN 1 AND 5),
@@ -370,3 +428,4 @@ app.include_router(notification_preferences_router)
 app.include_router(sos_contacts_router)
 app.include_router(sos_invite_router)
 app.include_router(sos_trigger_router)
+app.include_router(payments_router)

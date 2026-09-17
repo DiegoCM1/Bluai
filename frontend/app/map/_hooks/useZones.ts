@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { toast } from 'sonner-native'
 
 import { useNetwork } from '../../../features/network/NetworkContext'
-import { MAP_EVENT_RADIUS_KM } from '../config'
+import { MAP_EVENT_RADIUS_KM, VOTING_DISTANCE_METERS } from '../config'
 import {
   MapHttpError,
   createZone,
   deleteZone,
+  distanceInMeters,
   fetchZones,
   generateZoneId,
   isUnreachable,
@@ -330,8 +331,39 @@ export default function useZones({ userLocation, getVoterLocation }: UseZonesOpt
     [refreshPendingCount],
   )
 
+  // `canVote`, `withinVotingRadius` and `distanceKm` are computed BY THE SERVER, for the
+  // position and moment of the request. Served from cache they can be hours old and
+  // kilometres wrong, yet the detail modal renders them as fact — enabling a vote that
+  // will be rejected, or greying out one that would now succeed.
+  //
+  // Everything needed to recompute them is on the device: the zone's coordinates, the
+  // user's current position, and the same 10 km radius the backend enforces. Only done
+  // while stale; a fresh response is always authoritative.
+  const resolvedZones = useMemo(() => {
+    if (!isStale || !userLocation) return zones
+    return zones.map((zone) => {
+      // A pending report is the user's own and was never voteable anyway.
+      if (zone.pending) return zone
+      const meters = distanceInMeters(
+        zone.latitude,
+        zone.longitude,
+        userLocation.latitude,
+        userLocation.longitude,
+      )
+      const within = meters <= VOTING_DISTANCE_METERS
+      return {
+        ...zone,
+        distanceKm: meters / 1000,
+        withinVotingRadius: within,
+        // The server also refuses votes on your own event, and isOwner is stable, so
+        // this stays correct offline.
+        canVote: within && !zone.isOwner,
+      }
+    })
+  }, [zones, isStale, userLocation])
+
   return {
-    zones,
+    zones: resolvedZones,
     isStale: isStale || !isOnline,
     pendingCount,
     selectedZone,

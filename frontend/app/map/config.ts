@@ -13,6 +13,12 @@ export const DEFAULT_REGION = {
 // so this is UX, not security. Keep in sync with any future server-side check.
 export const REPORTING_DISTANCE_METERS = 10_000 // 10 km
 
+// How far from an event a user may VOTE on it. Unlike the reporting radius above, this
+// one IS server-enforced (map_events/service.py: "You must be within 10 km of the event
+// to vote"), so the client copy exists only to recompute canVote locally when the cached
+// server value is stale. Keep the two in sync.
+export const VOTING_DISTANCE_METERS = 10_000 // 10 km
+
 // Radius of events fetched around the user for display on the map (you can SEE far,
 // but only report/vote nearby). Not the same as the reporting/voting radius.
 export const MAP_EVENT_RADIUS_KM = 100

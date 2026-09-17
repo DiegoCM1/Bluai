@@ -1861,6 +1861,42 @@ export default function WeatherMapNativewind({
                         : "Sin calcular"}
                     </Text>
 
+                    {/* El marcador atenuado es una pista, no un mensaje: a media opacidad
+                        podría leerse como "lejano" o "resuelto". Aquí se dice explícito,
+                        y así el estado no depende solo de un matiz visual. */}
+                    {selectedZone.pending && (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                          paddingVertical: 10,
+                          paddingHorizontal: 14,
+                          borderRadius: 10,
+                          marginBottom: 20,
+                          backgroundColor: `${colors.brandOrange}22`,
+                          borderWidth: 1,
+                          borderColor: `${colors.brandOrange}66`,
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name="clock-outline"
+                          size={16}
+                          color={colors.brandOrange}
+                        />
+                        <Text
+                          style={{
+                            color: "#fff",
+                            fontFamily: fonts.poppins,
+                            fontSize: 13,
+                            flexShrink: 1,
+                          }}
+                        >
+                          Pendiente de envío. Solo tú lo ves hasta que recuperes conexión.
+                        </Text>
+                      </View>
+                    )}
+
                     {/* Voting (non-owner only) — collapses to a result chip once you've voted */}
                     {!selectedZone.isOwner &&
                       !isEditing &&

@@ -2,6 +2,7 @@ import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { ModelProvider } from './ai/_context/ModelContext';
 import { AuthProvider, useAuth } from '../features/auth/AuthContext';
+import { NetworkProvider } from '../features/network/NetworkContext';
 // import { Drawer } from "expo-router/drawer";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -469,6 +470,7 @@ export default Sentry.wrap(function Layout() {
       <DaltonicModeProvider>
         <ThemeProvider>
           <SafeAreaProvider>
+            <NetworkProvider>
             <AuthProvider>
               <AuthGate>
                 <ModelProvider>
@@ -554,6 +556,7 @@ export default Sentry.wrap(function Layout() {
                 </ModelProvider>
               </AuthGate>
             </AuthProvider>
+            </NetworkProvider>
           </SafeAreaProvider>
         </ThemeProvider>
       </DaltonicModeProvider>

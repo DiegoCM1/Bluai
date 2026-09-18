@@ -1,10 +1,15 @@
 """Tests for the agent's tools and request-scoped handler binding.
 
-Two concerns, tested separately:
+Concerns, tested separately:
   - get_datetime: real-clock formatting + the never-raise fallback contract.
   - build_tool_handlers: the binding/override/fallback LOGIC, with the clock
     mocked out so the assertions are deterministic (not dependent on wall time).
+  - get_nearby_cyclones: SIAT's assess_location mocked; only this tool's own
+    job is tested (failure wording, coordinate binding, formatting). SIAT's
+    contract has its own tests in siat/tests/test_assess_location.py.
 """
+
+from datetime import datetime, timezone
 
 import httpx
 import pytest
@@ -17,6 +22,7 @@ from app.features.ai.tools import (
     get_datetime,
     web_search,
 )
+from app.features.siat.levels import siat_title
 
 
 # --- get_datetime: real behavior -------------------------------------------
@@ -201,6 +207,70 @@ async def test_web_search_budget_is_per_request(monkeypatch):
 
     h2 = build_tool_handlers(web_search_budget=1)  # fresh request
     assert await h2["web_search"]("c") == "ok"
+
+
+# --- get_nearby_cyclones: SIAT seam + DB session mocked ---------------------
+
+class _FakeSession:
+    async def __aenter__(self):
+        return object()
+
+    async def __aexit__(self, *args):
+        return False
+
+
+@pytest.fixture
+def no_db(monkeypatch):
+    monkeypatch.setattr("app.features.ai.tools.AsyncSessionLocal", _FakeSession)
+
+
+def _assessment(name, level, distance_km, out_of_range=False):
+    return {
+        "name": name, "category_label": "Huracán", "advisory_time": datetime.now(timezone.utc),
+        "siat_level": level, "distance_km": distance_km, "eta_hours": 9.0, "out_of_range": out_of_range,
+    }
+
+
+@pytest.mark.asyncio
+async def test_nearby_cyclones_lookup_failure_never_reads_as_no_threat(monkeypatch, no_db):
+    """Telling someone "no hurricanes" because the DB failed is the worst possible bug."""
+    async def broken(db, lat, lon):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("app.features.ai.tools.assess_location", broken)
+    out = await build_tool_handlers(latitude=21.16, longitude=-86.85)["get_nearby_cyclones"]()
+
+    # Must LEAD with the failure. A plain `"no hay" not in out` check is wrong:
+    # the text itself tells the model "No afirmes que no hay ciclones".
+    assert out.lower().startswith("no fue posible")
+
+
+@pytest.mark.asyncio
+async def test_nearby_cyclones_uses_request_coords_not_model_args(monkeypatch, no_db):
+    seen = {}
+
+    async def spy(db, lat, lon):
+        seen["coords"] = (lat, lon)
+        return []
+
+    monkeypatch.setattr("app.features.ai.tools.assess_location", spy)
+    handlers = build_tool_handlers(latitude=21.16, longitude=-86.85)
+    await handlers["get_nearby_cyclones"](location="Tulum")  # model invents an arg
+
+    assert seen["coords"] == (21.16, -86.85)
+
+
+@pytest.mark.asyncio
+async def test_nearby_cyclones_lists_threats_with_siat_wording_and_distant(monkeypatch, no_db):
+    async def fake(db, lat, lon):
+        return [_assessment("ERICK", 4, 180.0), _assessment("NORBERT", 1, 4441.0, out_of_range=True)]
+
+    monkeypatch.setattr("app.features.ai.tools.assess_location", fake)
+    out = await build_tool_handlers(latitude=21.16, longitude=-86.85)["get_nearby_cyclones"]()
+
+    assert "ERICK" in out
+    assert siat_title(4) in out  # same wording as the SIAT push, whatever levels.py says
+    assert "NORBERT" in out      # distant storms are still mentioned, not dropped
 
 
 # --- registry / schema consistency -----------------------------------------

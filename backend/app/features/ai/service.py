@@ -2,6 +2,7 @@ import asyncio
 import httpx
 import json
 import logging
+import time
 from app.core.config import settings
 from app.features.ai.rag import retrieve
 from app.features.ai.tools import TOOL_SCHEMAS, build_tool_handlers
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 # loop by returning plain text; this is the seatbelt for when it doesn't, so a
 # confused model can't loop (and bill) forever.
 MAX_TOOL_ITERS = 5
+
+# Tool results can be long (web_search) and multi-line. Logs get one flattened,
+# truncated line so a result can't interleave with other requests' output.
+_TOOL_LOG_PREVIEW_CHARS = 300
 
 SYSTEM_PROMPT = """You are Bluai, the in-app AI assistant of the Bluai hurricane early-warning \
 app for residents of Mexico. Your only purpose is to help people prepare for, survive, and \
@@ -43,6 +48,8 @@ SMN / CONAGUA.
 
 TOOLS
 - get_datetime: current date/time in the user's timezone. Use for timing questions, when time is required to give a good response
+- get_nearby_cyclones: the app's own SIAT-CT data on active cyclones and their danger level for the user's location. \
+Use it FIRST for any question about hurricanes, storms, or whether the user is in danger; use web_search only for what it doesn't cover.
 - web_search: Search for up to date information in the internet. Use this when you need access to recent data or when you don't know something for sure. Realtime or recent events, anything that is recent or you don't know for sure.
 — if the results answer the question, reply immediately and do NOT search again.
 
@@ -138,6 +145,13 @@ def _build_assistant_tool_message(acc: dict) -> dict:
     return {"role": "assistant", "content": None, "tool_calls": tool_calls}
 
 
+def _log_preview(text: str) -> str:
+    flat = " | ".join(line.strip() for line in str(text).splitlines() if line.strip())
+    if len(flat) <= _TOOL_LOG_PREVIEW_CHARS:
+        return flat
+    return flat[:_TOOL_LOG_PREVIEW_CHARS] + "…"
+
+
 async def _execute_tool_calls(tool_calls: list[dict], handlers: dict) -> list[dict]:
     """Run each requested tool, returning one role:tool result message per call.
 
@@ -157,16 +171,20 @@ async def _execute_tool_calls(tool_calls: list[dict], handlers: dict) -> list[di
             logger.warning("[chat:tools] bad JSON args for %s: %r", name, raw_args)
             args = {}
 
+        print(f"[chat:tools] AI called {name} args={args}")
         handler = handlers.get(name)
         if handler is None:
             logger.warning("[chat:tools] model called unknown tool %r", name)
             content = f"Error: herramienta desconocida '{name}'."
         else:
+            started = time.perf_counter()
             try:
                 content = await handler(**args)
-                print(f"[chat:tools] {name}({args}) -> {content}")
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                print(f"[chat:tools] {name} ok in {elapsed_ms:.0f} ms -> {_log_preview(content)}")
             except Exception as exc:
-                logger.error("[chat:tools] %s failed: %s", name, exc, exc_info=True)
+                elapsed_ms = (time.perf_counter() - started) * 1000
+                logger.error("[chat:tools] %s failed after %.0f ms: %s", name, elapsed_ms, exc, exc_info=True)
                 content = f"Error ejecutando {name}."
 
         results.append({
@@ -218,8 +236,9 @@ async def chat(messages: list[dict], location: str | None = None, latitude: floa
     print(f"[chat] messages count: {len(messages)}")
     full_messages = [{"role": "system", "content": system_content}] + [m.model_dump() for m in messages]
 
-    # Bind this request's context (the user's resolved timezone) into the tools.
-    tool_handlers = build_tool_handlers(user_timezone=user_tz)
+    # Bind this request's context (the user's resolved timezone and their
+    # coordinates) into the tools.
+    tool_handlers = build_tool_handlers(user_timezone=user_tz, latitude=latitude, longitude=longitude)
 
     # --- Agent loop -------------------------------------------------------
     # Each pass streams one LLM turn. If the model asks for tools, we run them,
@@ -227,6 +246,7 @@ async def chat(messages: list[dict], location: str | None = None, latitude: floa
     # has already streamed to the client and we finish. Only `delta.content`
     # (the user-facing answer), the error envelope, and `[DONE]` ever reach the
     # SSE stream — tool-call chatter is handled server-side and never forwarded.
+    tools_used: list[str] = []  # for the per-reply summary log
     try:
         async with httpx.AsyncClient(timeout=60.0) as client:
             for _ in range(MAX_TOOL_ITERS):
@@ -288,6 +308,7 @@ async def chat(messages: list[dict], location: str | None = None, latitude: floa
                 # --- Turn finished: did the model ask for tools? ---
                 if finish_reason == "tool_calls" and tool_acc:
                     assistant_msg = _build_assistant_tool_message(tool_acc)
+                    tools_used.extend(c["function"]["name"] for c in assistant_msg["tool_calls"])
                     full_messages.append(assistant_msg)
                     tool_results = await _execute_tool_calls(assistant_msg["tool_calls"], tool_handlers)
                     full_messages.extend(tool_results)
@@ -295,11 +316,15 @@ async def chat(messages: list[dict], location: str | None = None, latitude: floa
                     continue  # ask the model again, now with tool results in context
 
                 # No tools requested -> the final answer already streamed above.
+                print(f"[chat:tools] reply done, tools used: {', '.join(tools_used) or 'none'}")
                 yield "data: [DONE]\n\n"
                 return
 
             # Safety valve: model kept requesting tools past the cap.
-            logger.warning("[chat:llm] hit MAX_TOOL_ITERS=%s without a final answer", MAX_TOOL_ITERS)
+            logger.warning(
+                "[chat:llm] hit MAX_TOOL_ITERS=%s without a final answer, tools used: %s",
+                MAX_TOOL_ITERS, ", ".join(tools_used),
+            )
             yield 'data: {"error": "max_tool_iterations"}\n\n'
             yield "data: [DONE]\n\n"
             return

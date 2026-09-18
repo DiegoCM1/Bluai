@@ -707,3 +707,36 @@ async def get_active_cyclones(db: AsyncSession, max_age_hours: int = 72) -> list
             "movement_direction_deg": parse_movement_direction(row["movement_direction"]),
         })
     return cyclones
+
+
+async def assess_location(db: AsyncSession, lat: float, lon: float) -> list[dict]:
+    """
+    Every active cyclone evaluated against one location, worst threat first
+    (ties broken by distance).
+
+    Public, read-only contract for callers outside SIAT (the AI chat tool):
+    no DB writes, no commit, no notifications — run_cycle stays the only
+    path that persists assessments or pushes. Uses the same evaluate_user()
+    as run_cycle, so any change to SIAT's scoring shows up here for free.
+
+    Guaranteed keys per item: name, category_label, advisory_time,
+    siat_level, distance_km, eta_hours, out_of_range.
+
+    Evaluation errors propagate on purpose: silently dropping a storm could
+    turn "couldn't check" into "no threat", so the caller must handle failure.
+    """
+    assessments = []
+    for cyclone in await get_active_cyclones(db):
+        # The column is nullable; evaluate_user compares wind_kmh numerically.
+        # Same guard get_active_cyclones applies for its own classification.
+        evaluable = {**cyclone, "wind_kmh": cyclone["wind_kmh"] or 0.0}
+        assessment = evaluate_user(lat, lon, evaluable)
+        assessments.append({
+            "name": cyclone["name"],
+            "category_label": cyclone["category_label"],
+            "advisory_time": cyclone["advisory_time"],
+            **assessment,
+        })
+    # Worst level first; among equal levels, nearest first.
+    assessments.sort(key=lambda a: (-a["siat_level"], a["distance_km"]))
+    return assessments

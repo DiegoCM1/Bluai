@@ -36,6 +36,8 @@ class Settings(BaseSettings):
     # Optional public origin used in checkout return URLs. Leave empty to use
     # the origin of the request, which keeps staging and production separate.
     PAYMENTS_PUBLIC_URL: str = ""
+    WEB_PAYMENTS_ENABLED: bool = False
+    WEB_PAYMENTS_ORIGIN: str = "https://www.bluai.com.mx"
 
     # Payments — MercadoPago (optional; omit to disable)
     MP_ACCESS_TOKEN: str = ""

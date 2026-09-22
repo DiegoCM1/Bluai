@@ -275,6 +275,14 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
             "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE"
         ))
         await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS web_checkouts (
+                user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                request_id VARCHAR(36) NOT NULL,
+                session_id VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS subscription_events (
                 id                BIGSERIAL PRIMARY KEY,
                 user_id           BIGINT REFERENCES users(id) ON DELETE SET NULL,

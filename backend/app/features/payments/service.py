@@ -3,6 +3,7 @@ from sqlalchemy import text
 from typing import Optional
 from math import asin, cos, radians, sin, sqrt
 import logging
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -329,7 +330,10 @@ async def cancel_stripe_subscription(db: AsyncSession, user_id: int) -> dict:
         raise RuntimeError("Stripe is not configured.")
 
     stripe.api_key = settings.STRIPE_SECRET_KEY
-    stripe.Subscription.modify(row.stripe_subscription_id, cancel_at_period_end=True)
+    try:
+        await asyncio.to_thread(stripe.Subscription.modify, row.stripe_subscription_id, cancel_at_period_end=True)
+    except stripe.StripeError:
+        raise RuntimeError("No se pudo cancelar la renovación. Intenta nuevamente.")
     await db.execute(
         text("""
             UPDATE subscriptions

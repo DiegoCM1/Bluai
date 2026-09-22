@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -33,7 +34,18 @@ from .service import (
     upsert_subscription,
 )
 
+from .web import router as web_router
+
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
+router.include_router(web_router)
+
+
+def stripe_period_end(subscription):
+    # New Stripe API versions expose billing periods on subscription items.
+    return subscription.get("current_period_end") or min(
+        (item["current_period_end"] for item in subscription.get("items", {}).get("data", [])
+         if item.get("current_period_end")), default=None,
+    )
 
 
 def checkout_return_url(request: Request, outcome: str) -> str:
@@ -244,8 +256,8 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
             stripe_subscription_id = session.get("subscription")
             if user_id and plan_slug and stripe_subscription_id:
-                stripe_subscription = stripe.Subscription.retrieve(stripe_subscription_id)
-                period_end = stripe_subscription.get("current_period_end")
+                stripe_subscription = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+                period_end = stripe_period_end(stripe_subscription)
                 await upsert_subscription(
                     db, int(user_id), plan_slug, billing_period,
                     current_period_end=datetime.fromtimestamp(period_end, timezone.utc) if period_end else None,
@@ -261,7 +273,7 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
             user_id = meta.get("user_id")
             plan_slug = meta.get("plan_slug")
             billing_period = meta.get("billing_period", "monthly")
-            period_end = stripe_subscription.get("current_period_end")
+            period_end = stripe_period_end(stripe_subscription)
             if user_id and plan_slug:
                 await upsert_subscription(
                     db, int(user_id), plan_slug, billing_period,

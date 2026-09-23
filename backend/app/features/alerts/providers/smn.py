@@ -118,14 +118,21 @@ def _parse_bulletin(html: str) -> dict | None:
     else:
         logger.debug("SMN parse: date pattern not found in HTML")
 
-    # summary — first paragraph of the body section
+    # body — full bulletin text. `summary` (500 chars) is what the raw card/push
+    # showed before the plain-language rewrite; `full_text` is the actual source
+    # material for that rewrite (see ai/service.py:generate_plain_summary) — an
+    # LLM asked to simplify an already-truncated 500-char fragment has nothing
+    # real to work with, so it needs more than the display-sized summary.
     body_match = re.search(
         r"visforms_contenedor_cuerpo[^>]*>(.*?)</div>\s*<div id='ProximoAviso",
         html, re.DOTALL
     )
     summary: str | None = None
+    full_text: str | None = None
     if body_match:
-        summary = _strip_tags(body_match.group(1))[:500]
+        body_text = _strip_tags(body_match.group(1))
+        summary = body_text[:500]
+        full_text = body_text[:8000]
     else:
         logger.debug("SMN parse: summary selector 'visforms_contenedor_cuerpo' not found")
 
@@ -148,6 +155,7 @@ def _parse_bulletin(html: str) -> dict | None:
         "issued_at": issued_at,
         "headline": headline,
         "summary": summary,
+        "full_text": full_text,
         "pdf_url": pdf_url,
         "source": "SMN/CONAGUA",
     }

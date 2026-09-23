@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
-from app.core.config import settings
 from app.core.database import get_db
 from app.features.siat.schemas import (
     ActiveCyclonesResponse, AffectedUsersResponse, FakeCycloneRequest, InjectCycloneResponse,
@@ -13,6 +12,7 @@ from app.features.siat.service import (
     get_active_cyclones, get_affected_users, get_user_siat_status, inject_and_run_cycle,
     inject_smn_test_alert, reset_user_siat_state, run_cycle,
 )
+from app.features.notifications.router import require_dev_tools_admin
 from app.features.users.service import get_user_by_firebase_uid
 from app.middleware.api_key_auth import verify_api_key
 
@@ -38,21 +38,12 @@ async def siat_inject_cyclone(
     body: FakeCycloneRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    _admin: None = Depends(require_dev_tools_admin),
 ):
     """
     Insert a fake cyclone and immediately run a full SIAT cycle end-to-end.
-    Dev/staging only — requires Firebase auth + admin email allowlist.
+    Dev/staging only — requires Firebase auth + dev-tools allowlist.
     """
-    if not settings.DEV_BYPASS_NOTIF_TEST_AUTH:
-        admin_emails = [
-            e.strip().lower()
-            for e in settings.NOTIFICATION_TEST_ADMIN_EMAILS.split(",")
-            if e.strip()
-        ]
-        user_email = (current_user.get("email") or "").lower()
-        if not admin_emails or user_email not in admin_emails:
-            raise HTTPException(status_code=403, detail="Not authorized.")
-
     db_user = await get_user_by_firebase_uid(db, current_user.get("uid"))
     if db_user is None:
         raise HTTPException(status_code=404, detail="User profile not found. Call POST /api/v1/users/me first.")
@@ -86,21 +77,12 @@ async def siat_reset_state(
 async def siat_inject_smn_alert(
     body: InjectSMNAlertRequest,
     db: AsyncSession = Depends(get_db),
-    current_user: dict = Depends(get_current_user),
+    _admin: None = Depends(require_dev_tools_admin),
 ):
     """
     Insert a national test alert and immediately process it via the SMN geocercado path.
-    Dev/staging only — requires Firebase auth + admin email allowlist.
+    Dev/staging only — requires Firebase auth + dev-tools allowlist.
     """
-    if not settings.DEV_BYPASS_NOTIF_TEST_AUTH:
-        admin_emails = [
-            e.strip().lower()
-            for e in settings.NOTIFICATION_TEST_ADMIN_EMAILS.split(",")
-            if e.strip()
-        ]
-        user_email = (current_user.get("email") or "").lower()
-        if not admin_emails or user_email not in admin_emails:
-            raise HTTPException(status_code=403, detail="Not authorized.")
     return await inject_smn_test_alert(db, body.level, body.title, body.short)
 
 

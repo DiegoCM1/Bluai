@@ -2,6 +2,8 @@
 # wheel index alongside PyPI, which is where the +cpu builds below live.
 --extra-index-url https://download.pytorch.org/whl/cpu
 
+stripe>=10.0.0
+mercadopago>=2.2.1
 annotated-doc==0.0.4
 
 # torch arrives as a transitive dependency of sentence-transformers. Left

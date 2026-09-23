@@ -97,6 +97,7 @@ import com.facebook.react.bridge.Promise
 import com.facebook.react.bridge.ReactApplicationContext
 import com.facebook.react.bridge.ReactContextBaseJavaModule
 import com.facebook.react.bridge.ReactMethod
+import com.facebook.react.bridge.ReadableArray
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import com.google.android.gms.common.api.ApiException
@@ -120,13 +121,28 @@ class NearbyConnectionsModule(
   private val reactContext: ReactApplicationContext
 ) : ReactContextBaseJavaModule(reactContext) {
   private val connectionsClient: ConnectionsClient = Nearby.getConnectionsClient(reactContext)
-  private val strategy: Strategy = Strategy.P2P_POINT_TO_POINT
+  // P2P_CLUSTER (not P2P_POINT_TO_POINT): mesh needs a device connected to
+  // SEVERAL peers at once, not just one. Same Nearby API, different topology.
+  private val strategy: Strategy = Strategy.P2P_CLUSTER
   private val serviceId: String = reactContext.packageName + ".nearby.chat"
   private val endpointNames = mutableMapOf<String, String>()
   private var localEndpointName: String = "BluEye"
-  private var connectedEndpointId: String? = null
+  // Peer map, not a single endpoint: P2P_CLUSTER holds multiple simultaneous
+  // connections. (Was: connectedEndpointId: String?)
+  private val connectedEndpoints = mutableSetOf<String>()
+  // Synced from JS (see setBlockedDeviceIds) so a blocked peer can be
+  // rejected here, before acceptConnection — no round trip to JS needed.
+  // endpointName is packed as "<deviceId>|<nickname>" by the JS identity
+  // layer (see local-chat/_services/identity.ts) — deviceIdFromEndpointName
+  // below undoes that packing.
+  private val blockedDeviceIds = mutableSetOf<String>()
 
   override fun getName(): String = "NearbyConnections"
+
+  private fun deviceIdFromEndpointName(endpointName: String): String {
+    val sep = endpointName.indexOf('|')
+    return if (sep == -1) endpointName else endpointName.substring(0, sep)
+  }
 
   private fun emit(eventName: String, params: Map<String, Any?> = emptyMap()) {
     val payload: WritableMap = Arguments.createMap()
@@ -171,6 +187,21 @@ class NearbyConnectionsModule(
   private val connectionLifecycleCallback = object : ConnectionLifecycleCallback() {
     override fun onConnectionInitiated(endpointId: String, connectionInfo: ConnectionInfo) {
       endpointNames[endpointId] = connectionInfo.endpointName
+
+      if (deviceIdFromEndpointName(connectionInfo.endpointName) in blockedDeviceIds) {
+        // Reject before ever accepting — the blocked peer never gets a
+        // PayloadCallback wired up, never joins connectedEndpoints.
+        connectionsClient.rejectConnection(endpointId)
+        emit(
+          "NearbyConnectionRejected",
+          mapOf(
+            "endpointId" to endpointId,
+            "endpointName" to connectionInfo.endpointName,
+          )
+        )
+        return
+      }
+
       emit(
         "NearbyConnectionInitiated",
         mapOf(
@@ -183,13 +214,12 @@ class NearbyConnectionsModule(
 
     override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
       if (resolution.status.isSuccess) {
-        connectedEndpointId = endpointId
-        // Once paired, stop both radios. Leaving advertising + discovery
-        // running under P2P_POINT_TO_POINT makes Nearby renegotiate mediums
-        // and tear the link down after a few seconds. These calls do NOT
-        // affect the established connection — only peer-finding.
-        connectionsClient.stopAdvertising()
-        connectionsClient.stopDiscovery()
+        connectedEndpoints.add(endpointId)
+        // P2P_CLUSTER (unlike the old P2P_POINT_TO_POINT): keep both radios
+        // running after connecting. The whole point of cluster mode is
+        // gathering MORE simultaneous connections — stopping advertise/
+        // discover here would cap every device at exactly one peer, same as
+        // before, and there'd be no mesh to speak of.
         emitState("connected")
         emit(
           "NearbyConnectionConnected",
@@ -205,10 +235,8 @@ class NearbyConnectionsModule(
     }
 
     override fun onDisconnected(endpointId: String) {
-      if (connectedEndpointId == endpointId) {
-        connectedEndpointId = null
-      }
-      emitState("idle")
+      connectedEndpoints.remove(endpointId)
+      emitState(if (connectedEndpoints.isEmpty()) "idle" else "connected")
       emit(
         "NearbyDisconnected",
         mapOf(
@@ -305,11 +333,13 @@ class NearbyConnectionsModule(
       }
   }
 
+  // Directed send: targets one specific peer out of the (possibly several)
+  // connected endpoints. The old signature took no endpointId and always
+  // sent to "the one" connection — meaningless once more than one exists.
   @ReactMethod
-  fun sendMessage(message: String, promise: Promise) {
-    val endpointId = connectedEndpointId
-    if (endpointId == null) {
-      promise.reject("NEARBY_NOT_CONNECTED", "No connected endpoint")
+  fun sendMessage(endpointId: String, message: String, promise: Promise) {
+    if (endpointId !in connectedEndpoints) {
+      promise.reject("NEARBY_NOT_CONNECTED", "Not connected to endpoint $endpointId")
       return
     }
 
@@ -321,13 +351,19 @@ class NearbyConnectionsModule(
       }
   }
 
+  // endpointId omitted (nil from JS) → disconnect everyone, matching
+  // LocalTransport.disconnect(endpointId?) in transport.ts.
   @ReactMethod
-  fun disconnect(promise: Promise) {
-    connectedEndpointId?.let {
-      connectionsClient.disconnectFromEndpoint(it)
+  fun disconnect(endpointId: String?, promise: Promise) {
+    if (endpointId != null) {
+      connectionsClient.disconnectFromEndpoint(endpointId)
+      connectedEndpoints.remove(endpointId)
+      emitState(if (connectedEndpoints.isEmpty()) "idle" else "connected")
+    } else {
+      connectedEndpoints.forEach { connectionsClient.disconnectFromEndpoint(it) }
+      connectedEndpoints.clear()
+      emitState("idle")
     }
-    connectedEndpointId = null
-    emitState("idle")
     promise.resolve(true)
   }
 
@@ -350,9 +386,21 @@ class NearbyConnectionsModule(
     connectionsClient.stopAdvertising()
     connectionsClient.stopDiscovery()
     connectionsClient.stopAllEndpoints()
-    connectedEndpointId = null
+    connectedEndpoints.clear()
     endpointNames.clear()
     emitState("idle")
+    promise.resolve(true)
+  }
+
+  // Synced from JS whenever the blocklist changes (see local-chat storage.ts
+  // loadBlockedDeviceIds/saveBlockedDeviceIds) — checked in
+  // onConnectionInitiated, above, before ever accepting.
+  @ReactMethod
+  fun setBlockedDeviceIds(deviceIds: ReadableArray, promise: Promise) {
+    blockedDeviceIds.clear()
+    for (i in 0 until deviceIds.size()) {
+      deviceIds.getString(i)?.let { blockedDeviceIds.add(it) }
+    }
     promise.resolve(true)
   }
 }

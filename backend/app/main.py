@@ -14,6 +14,7 @@ from app.features.notification_preferences.router import router as notification_
 from app.features.sos_contacts.router import router as sos_contacts_router
 from app.features.sos_invite.router import router as sos_invite_router
 from app.features.sos_trigger.router import router as sos_trigger_router
+from app.features.payments.router import router as payments_router
 from app.features.siat.service import ensure_siat_tables, run_cycle
 from app.features.alerts.providers.smn import fetch_latest_bulletin
 from app.features.alerts.providers.smn_ciclon import fetch_active_advisories
@@ -30,9 +31,11 @@ logger = logging.getLogger(__name__)
 # silently — the app boots fine and /ai/chat just 404s — so log the reason.
 try:
     from app.features.ai.router import router as ai_router
+    from app.features.ai.service import generate_plain_summary
 except Exception:
     logger.exception("AI router import failed; /ai/chat and /api/v1/ai/alert-summary will 404")
     ai_router = None
+    generate_plain_summary = None
 
 SIAT_CYCLE_INTERVAL_SECONDS = 30 * 60  # 30 minutes
 
@@ -94,6 +97,12 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
         ))
         await conn.execute(text(
             "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS cyclone_meta JSONB"
+        ))
+        # Resumen en lenguaje llano del boletín SMN, generado una sola vez al
+        # persistir el boletín (no en cada request) — lo usan el push y las
+        # tarjetas de alerta en vez del texto crudo scrapeado del HTML oficial.
+        await conn.execute(text(
+            "ALTER TABLE alerts ADD COLUMN IF NOT EXISTS ai_summary TEXT"
         ))
         await conn.execute(text(
             "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30)"
@@ -214,6 +223,21 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        # `CREATE TABLE IF NOT EXISTS` protege la TABLA, no sus columnas: donde
+        # `sos_events` ya existía, Postgres se salta el statement completo y jamás
+        # compara el esquema. Prod creó esta tabla con una forma vieja (la de
+        # `future_integration/sos/service.py`, sin `notified_count`), así que el
+        # INSERT de `trigger_sos` llevaba meses tirando 500 —
+        # UndefinedColumnError— mientras staging, CI y cada local pasaban: ahí la
+        # base nace limpia y el CREATE sí corre.
+        #
+        # Por eso una columna nueva necesita SIEMPRE su ALTER además del CREATE.
+        # El CREATE describe bases nuevas; el ALTER, las que ya existen.
+        # `test_schema_completeness.py` no puede ver este hueco: corre contra una
+        # base limpia, donde el cuerpo del CREATE siempre produce la columna.
+        await conn.execute(text(
+            "ALTER TABLE sos_events ADD COLUMN IF NOT EXISTS notified_count INT NOT NULL DEFAULT 0"
+        ))
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS sos_events_sender_idx ON sos_events (sender_id, created_at DESC)"
         ))
@@ -241,6 +265,71 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS sos_contacts_linked_uid_idx "
             "ON sos_contacts (linked_user_id) WHERE linked_user_id IS NOT NULL"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id                      BIGSERIAL PRIMARY KEY,
+                user_id                 BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                plan_slug               VARCHAR(20) NOT NULL DEFAULT 'free',
+                stripe_customer_id      VARCHAR(100),
+                stripe_subscription_id  VARCHAR(100),
+                status                  VARCHAR(20) NOT NULL DEFAULT 'active',
+                current_period_end      TIMESTAMPTZ,
+                created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT subscriptions_user_unique UNIQUE (user_id)
+            )
+        """))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS billing_period VARCHAR(10) NOT NULL DEFAULT 'monthly'"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS payment_provider VARCHAR(20)"
+        ))
+        await conn.execute(text(
+            "ALTER TABLE subscriptions ADD COLUMN IF NOT EXISTS cancel_at_period_end BOOLEAN NOT NULL DEFAULT FALSE"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS web_checkouts (
+                user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                request_id VARCHAR(36) NOT NULL,
+                session_id VARCHAR(100),
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS subscription_events (
+                id                BIGSERIAL PRIMARY KEY,
+                user_id           BIGINT REFERENCES users(id) ON DELETE SET NULL,
+                provider          VARCHAR(20) NOT NULL,
+                event_type        VARCHAR(100) NOT NULL,
+                provider_event_id VARCHAR(255) UNIQUE,
+                processing_status VARCHAR(20) NOT NULL DEFAULT 'processing',
+                plan_slug         VARCHAR(20),
+                billing_period    VARCHAR(10),
+                amount_cents      INTEGER,
+                currency          VARCHAR(10),
+                details           JSONB NOT NULL DEFAULT '{}'::jsonb,
+                occurred_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                processed_at      TIMESTAMPTZ
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS subscription_events_user_idx "
+            "ON subscription_events (user_id, occurred_at DESC)"
+        ))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS family_members (
+                id              BIGSERIAL PRIMARY KEY,
+                owner_user_id   BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                member_user_id  BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                CONSTRAINT family_members_unique UNIQUE (owner_user_id, member_user_id),
+                CONSTRAINT family_members_not_self CHECK (owner_user_id <> member_user_id)
+            )
+        """))
+        await conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS family_members_owner_idx ON family_members (owner_user_id)"
         ))
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS feedback (
@@ -279,7 +368,9 @@ async def _siat_background_loop():
             async with AsyncSessionLocal() as db:
                 bulletin = await fetch_latest_bulletin()
                 if bulletin:
-                    inserted = await persist_smn_bulletin_if_new(db, bulletin)
+                    inserted = await persist_smn_bulletin_if_new(
+                        db, bulletin, summarizer=generate_plain_summary
+                    )
                     if inserted:
                         logger.info(
                             "SMN: new bulletin persisted — '%s'",
@@ -360,3 +451,4 @@ app.include_router(notification_preferences_router)
 app.include_router(sos_contacts_router)
 app.include_router(sos_invite_router)
 app.include_router(sos_trigger_router)
+app.include_router(payments_router)

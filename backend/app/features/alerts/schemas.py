@@ -9,6 +9,9 @@ class AlertSummary(BaseModel):
     score:int
     title:str
     short:str
+    # Plain-language rewrite (SMN bulletins only, see ai.service.generate_plain_summary).
+    # None for every other alert source — clients fall back to `short`.
+    ai_summary: str | None = None
 
 
 class AlertDetail(BaseModel):
@@ -23,6 +26,7 @@ class AlertDetail(BaseModel):
     factors: list
     recommendations: list
     pdf_url: str | None = None
+    ai_summary: str | None = None
 
 
 class AlertCreate(BaseModel):

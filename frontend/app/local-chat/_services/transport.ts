@@ -8,6 +8,8 @@ export interface TransportHandlers {
   onConnectionInitiated: (peer: Peer) => void;
   onConnected: (peer: Peer) => void;
   onConnectionFailed: (endpointId: string) => void;
+  /** A connection was auto-rejected natively because the peer's deviceId is blocked. */
+  onConnectionRejected: (peer: Peer) => void;
   onDisconnected: (endpointId: string) => void;
   /** Raw payload string from a peer. Caller decodes it (see protocol.ts). */
   onPayload: (endpointId: string, raw: string) => void;
@@ -33,6 +35,11 @@ export interface LocalTransport {
   /** Disconnect a specific peer, or all peers when omitted. */
   disconnect(endpointId?: string): Promise<void>;
   stopAll(): Promise<void>;
+  /** Sync the full blocked-deviceId list down to the native layer, so a
+   * blocked peer is rejected in onConnectionInitiated — before ever
+   * accepting, no JS round trip needed. No-op on platforms without native
+   * support for it (checked via best-effort try/catch by the caller). */
+  setBlockedDeviceIds(deviceIds: string[]): Promise<void>;
   /** Subscribe to transport events. Returns an unsubscribe function. */
   subscribe(handlers: Partial<TransportHandlers>): () => void;
 }

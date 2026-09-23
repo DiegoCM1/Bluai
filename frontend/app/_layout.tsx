@@ -2,6 +2,7 @@ import "../global.css";
 import { Stack, useRouter, useSegments } from "expo-router";
 import { ModelProvider } from './ai/_context/ModelContext';
 import { AuthProvider, useAuth } from '../features/auth/AuthContext';
+import { NetworkProvider } from '../features/network/NetworkContext';
 // import { Drawer } from "expo-router/drawer";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -164,8 +165,8 @@ function AuthGate({ children }) {
   useEffect(() => {
     if (loading) return
     if (!authEnabled) {
-      const inTabsGroup = segments[0] === '(tabs)'
-      if (!inTabsGroup) {
+      // Bypass mode: if user just logged in from auth screen, send them to tabs
+      if (user && segments[0] === '(auth)') {
         router.replace('/(tabs)/MapScreen')
       }
       return
@@ -250,7 +251,7 @@ export default Sentry.wrap(function Layout() {
       });
 
       if (isSosInvite && inviteToken) {
-        console.log('[QA_NAV] tap → sos-invite | token:', inviteToken)
+        console.log('[QA_NAV] tap → sos-invite | tokenPrefix:', redactToken(inviteToken))
         AsyncStorage.setItem(PENDING_SOS_INVITE_KEY, inviteToken).catch(() => {});
         router.push({ pathname: "/sos-invite/[token]", params: { token: inviteToken } });
         return;
@@ -306,7 +307,7 @@ export default Sentry.wrap(function Layout() {
         return;
       }
       if (isSosInvite && inviteToken) {
-        console.log('[QA_SOS_INVITE] foreground received | saving token:', inviteToken)
+        console.log('[QA_SOS_INVITE] foreground received | saving tokenPrefix:', redactToken(inviteToken))
         AsyncStorage.setItem(PENDING_SOS_INVITE_KEY, inviteToken).catch(() => {});
         toast(`Invitación SOS de ${inviterDisplayName}`, {
           description: 'Toca para aceptar la invitación.',
@@ -396,7 +397,7 @@ export default Sentry.wrap(function Layout() {
       });
 
       if (isSosInvite && inviteToken) {
-        console.log('[QA_NAV] cold start → sos-invite | token:', inviteToken)
+        console.log('[QA_NAV] cold start → sos-invite | tokenPrefix:', redactToken(inviteToken))
         AsyncStorage.setItem(PENDING_SOS_INVITE_KEY, inviteToken).catch(() => {});
         router.push({ pathname: "/sos-invite/[token]", params: { token: inviteToken } });
         return;
@@ -469,6 +470,7 @@ export default Sentry.wrap(function Layout() {
       <DaltonicModeProvider>
         <ThemeProvider>
           <SafeAreaProvider>
+            <NetworkProvider>
             <AuthProvider>
               <AuthGate>
                 <ModelProvider>
@@ -554,6 +556,7 @@ export default Sentry.wrap(function Layout() {
                 </ModelProvider>
               </AuthGate>
             </AuthProvider>
+            </NetworkProvider>
           </SafeAreaProvider>
         </ThemeProvider>
       </DaltonicModeProvider>

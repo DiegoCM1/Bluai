@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from app.features.siat.classification import classify_wind_kmh, classification_label
 from app.features.siat.direction import parse_movement_direction
 from app.features.siat.evaluator import evaluate_user, haversine_km
+from app.features.siat.levels import siat_title
 from app.features.siat.providers.nhc import fetch_active_cyclones
 from app.features.notifications.service import (
     get_tokens_for_users,
@@ -38,14 +39,6 @@ logger = logging.getLogger(__name__)
 
 _NOTIFY_MIN_LEVEL = 2          # VERDE and above trigger push
 _QUIET_HOURS_OVERRIDE_LEVEL = 4  # NARANJA and ROJO always fire even in quiet hours
-
-_COLOR_LABELS = {
-    "AZUL": "Azul",
-    "VERDE": "Verde",
-    "AMARILLO": "Amarillo",
-    "NARANJA": "Naranja",
-    "ROJO": "Rojo",
-}
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +256,7 @@ async def _upsert_cyclone_alert(
     national bulletins / admin-created alerts, not SIAT cyclone escalations.
     """
     level = assessment["siat_level"]
-    color = assessment["siat_color"]
-    label = _COLOR_LABELS.get(color, color)
-    title = f"Ciclón {cyclone['name']} — SIAT-CT {label}"
+    title = f"Ciclón {cyclone['name']} — {siat_title(level)}"
     short = (assessment.get("reason") or f"Ciclón a {assessment.get('distance_km', '?'):.0f} km")[:500]
     result = await db.execute(
         text("""
@@ -304,8 +295,7 @@ async def _push_per_user(
             continue
 
         level = assessment["siat_level"]
-        label = _COLOR_LABELS.get(assessment["siat_color"], assessment["siat_color"])
-        title = f"Alerta SIAT-CT {label}"
+        title = f"Alerta {siat_title(level)}"
         body = assessment["reason"]
         alert_id = assessment.get("alert_id")
 
@@ -323,10 +313,14 @@ async def _push_per_user(
         msg = messaging.MulticastMessage(
             notification=messaging.Notification(title=title, body=body),
             data=data,
-            android=messaging.AndroidConfig(priority="high"),
-            # Alerta de ciclón: tiene que sonar y tiene que poder atravesar Focus /
-            # No Molestar. Antes solo mandaba el header de prioridad, o sea que
-            # llegaba muda y la retenía el modo Sueño.
+            android=messaging.AndroidConfig(
+                priority="high",
+                notification=messaging.AndroidNotification(
+                    channel_id="sos_emergency",
+                    default_vibrate_timings=False,
+                    vibrate_timings_millis=[0, 250, 250, 250],
+                ),
+            ),
             apns=build_apns_config(interruption_level="time-sensitive"),
             tokens=tokens,
         )
@@ -365,7 +359,7 @@ _SMN_RADIUS_KM = 500.0
 async def _get_pending_smn_alerts(db: AsyncSession) -> list:
     # Includes national alerts (lat/lon NULL) — these are handled without radius filtering
     result = await db.execute(text("""
-        SELECT id, title, short, level, lat, lon
+        SELECT id, title, short, ai_summary, level, lat, lon
         FROM alerts
         WHERE notified_at IS NULL
           AND timestamp > NOW() - INTERVAL '35 minutes'
@@ -406,7 +400,11 @@ async def _push_smn_for_alert(
         return 0
 
     smn_title = f"Nueva alerta — {alert['title']}"
-    smn_body = alert["short"] or ""
+    # ai_summary is the plain-language rewrite (SMN general bulletins only, see
+    # ai.service.generate_plain_summary) — falls back to the raw scraped `short`
+    # when it wasn't generated (LLM unconfigured/unavailable, or a cyclone
+    # advisory / admin alert, which don't get one).
+    smn_body = alert.get("ai_summary") or alert["short"] or ""
     msg = messaging.MulticastMessage(
         notification=messaging.Notification(title=smn_title, body=smn_body),
         data={
@@ -417,8 +415,14 @@ async def _push_smn_for_alert(
             "alertTitle": smn_title,
             "alertMessage": smn_body,
         },
-        android=messaging.AndroidConfig(priority="high"),
-        # Mismo razonamiento que el push por usuario de arriba.
+        android=messaging.AndroidConfig(
+            priority="high",
+            notification=messaging.AndroidNotification(
+                channel_id="sos_emergency",
+                default_vibrate_timings=False,
+                vibrate_timings_millis=[0, 250, 250, 250],
+            ),
+        ),
         apns=build_apns_config(interruption_level="time-sensitive"),
         tokens=all_tokens,
     )
@@ -703,3 +707,36 @@ async def get_active_cyclones(db: AsyncSession, max_age_hours: int = 72) -> list
             "movement_direction_deg": parse_movement_direction(row["movement_direction"]),
         })
     return cyclones
+
+
+async def assess_location(db: AsyncSession, lat: float, lon: float) -> list[dict]:
+    """
+    Every active cyclone evaluated against one location, worst threat first
+    (ties broken by distance).
+
+    Public, read-only contract for callers outside SIAT (the AI chat tool):
+    no DB writes, no commit, no notifications — run_cycle stays the only
+    path that persists assessments or pushes. Uses the same evaluate_user()
+    as run_cycle, so any change to SIAT's scoring shows up here for free.
+
+    Guaranteed keys per item: name, category_label, advisory_time,
+    siat_level, distance_km, eta_hours, out_of_range.
+
+    Evaluation errors propagate on purpose: silently dropping a storm could
+    turn "couldn't check" into "no threat", so the caller must handle failure.
+    """
+    assessments = []
+    for cyclone in await get_active_cyclones(db):
+        # The column is nullable; evaluate_user compares wind_kmh numerically.
+        # Same guard get_active_cyclones applies for its own classification.
+        evaluable = {**cyclone, "wind_kmh": cyclone["wind_kmh"] or 0.0}
+        assessment = evaluate_user(lat, lon, evaluable)
+        assessments.append({
+            "name": cyclone["name"],
+            "category_label": cyclone["category_label"],
+            "advisory_time": cyclone["advisory_time"],
+            **assessment,
+        })
+    # Worst level first; among equal levels, nearest first.
+    assessments.sort(key=lambda a: (-a["siat_level"], a["distance_km"]))
+    return assessments

@@ -393,6 +393,10 @@ Probado de verdad, no inferido:
   El Simulator es válido para esto: el borrado no toca APNs ni entitlements. **Falta
   repetirlo con Sign in with Apple**, que es donde aparece P2.
 
+### G. Upload R8 file to make the app lighter for users and facilitate revision by GooglePlay — **DIFERIDO**
+It refers to the alert/advice that appears whenever sending a new update to the playstore. - Optimization
+
+
 ---
 
 ## Post-release — encontrado durante el release, NO bloquea el envío
@@ -485,15 +489,92 @@ y el día del release es mal día para descubrir los casos borde de esa iniciali
 
 ---
 
+### P4. La tab bar se queda inerte de vez en cuando (iPhone físico) — sin repro
+
+**19/08, dev build, iPhone SE físico.** La tab bar se dibuja normal pero no recibe
+toques: **todos** los tabs, **cero** feedback de press. El resto de la pantalla (mapa,
+SOS, reportar) responde bien, así que no es un freeze.
+
+- **No es del tour.** Diego ya lo había visto antes de los cambios del tutorial, y al
+  re-correr el tour después del reinicio no volvió a pasar.
+- **Se limpia con force-quit + relanzar.** No se reprodujo en ~4 intentos posteriores,
+  incluyendo sign out / sign in con Google.
+- **Solo en dispositivo físico.** El Simulator de iOS nunca lo hace — que es justo por
+  qué nadie lo había cachado (ver "El Simulator no firma nada — y por eso engaña").
+
+Sin repro determinista no hay nada que arreglar, y no bloquea el envío. **Si vuelve:**
+anotar si el tour corrió en ese arranque y si hubo un reload de Metro antes — son las
+dos variables que no se pudieron descartar.
+
+---
+
+### ~~P5. El dedup de push token no lleva el uid~~ ✅ **HECHO (19/08)**
+
+Cambiar de cuenta en el mismo dispositivo dejaba el push mudo. **Verificado 19/08** contra
+staging con el dev build, y arreglado antes del build de producción.
+
+**Qué pasaba.** `sendTokenToBackend` comparaba `stored === fcmToken` contra AsyncStorage
+(`_LAST_TOKEN_KEY`). Un token de FCM es del **dispositivo**, no del usuario: al
+cerrar sesión y entrar con otra cuenta el token es idéntico, el guard matchea y **el POST
+nunca sale**. Peor: devuelve `{ ok: true }`, así que se imprime `registration finished` y
+toda la telemetría reporta éxito. Falla en silencio y en positivo.
+
+**El backend ya está bien** — `notifications/service.py:215-221` hace
+`INSERT ... ON CONFLICT (token) DO UPDATE SET user_id = :user_id`. Si el POST llegara, la
+fila se reasignaría sola. El bug es 100% del cliente.
+
+Evidencia:
+
+- Sign-in Google 19:35 local → `token registered with backend` + `POST /api/v1/push-token
+  201` en los logs HTTP de Railway (staging).
+- Sign-in Apple ~20:05 local → `token already registered — skipping POST`. **Cero** POSTs
+  a `/api/v1/push-token` entre 20:02 y 20:13 local.
+- El user de Apple (`psr0MWNFmBUUeCWYGfzG…`) quedó sin ninguna fila en `device_tokens`.
+
+**No bloquea el envío:** el revisor instala de cero, AsyncStorage está vacío y el POST sí
+sale. Solo afecta cambiar de cuenta en el mismo dispositivo — incluido borrar cuenta y
+volver a entrar, que sí es un flujo real y deja al usuario sin alertas sin avisarle.
+
+**Fix aplicado (solo cliente):** `sendTokenToBackend` arma `dedupeKey = ${uid}:${token}` y
+lo usa tanto en el guard en memoria (`_registrationInFlight`) como en el de AsyncStorage
+(`_LAST_TOKEN_KEY`). El uid se lee **antes del primer await** — `currentUser` puede cambiar
+mientras corren los reintentos, y el dedup tiene que hablar del usuario que motivó ese
+registro. Sin sesión cae a `anon`, que es un valor distinto de cualquier uid real, así que
+el primer registro autenticado sí sale.
+
+**Por qué era barato hacerlo el día del release:** si la llave nueva se equivoca, el peor
+caso es un POST de más — y ese POST es idempotente en el backend (`ON CONFLICT`). El
+downside de un bug aquí es ruido, no una cuenta muda.
+
+---
+
 ## Falta en App Store Connect (Diego) — **bloquea el envío**
 
 No es código, pero sin esto la review se rechaza:
 
-1. **Cuenta demo para App Review.** La app entra por `AuthGate`: sin credenciales el
-   revisor **no pasa del login** y eso es rechazo automático. Crear una cuenta de prueba
-   —con onboarding ya completado y algún contacto SOS, para que la app no se vea vacía— y
-   ponerla en *App Review Information*. Google/Apple sign-in complica al revisor: si no
-   puede entrar con user+password, hay que dejar instrucciones explícitas ahí mismo.
+1. ~~**Cuenta demo para App Review.**~~ ⚠️ **REPLANTEADO 19/08 — no se crea ninguna cuenta.**
+   `AuthContext.tsx` solo expone `signInWithGoogle` y `signInWithApple`: **la app no tiene
+   formulario de usuario/contraseña**, así que los campos de demo account de ASC no tienen
+   dónde escribirse. Peor, llenarlos sería contraproducente:
+
+   - **Apple sign-in no acepta credenciales tecleadas.** La hoja está atada al Apple ID del
+     dispositivo; el revisor tendría que loguear el equipo de review con nuestra cuenta, y
+     el 2FA manda el código a *nuestros* dispositivos.
+   - **Google casi seguro lanzaría un challenge** ("verifica que eres tú") desde un
+     dispositivo/IP/país nuevos → el revisor se atora → **rechazo por Guideline 2.1**.
+   - `blueyehurricanealerts@gmail.com` es **admin de App Store Connect**. Su password no se
+     comparte con nadie, y menos por un campo de texto.
+
+   **Qué se hace en su lugar:** el revisor entra con **su propio Apple ID** vía Sign in with
+   Apple — que es justo para lo que Apple obliga a implementarlo. Se marca *Sign-In
+   Required* y la instrucción real va en **Notes**. Si ASC no deja los campos de
+   usuario/password vacíos, poner `N/A — use Sign in with Apple` y que Notes cargue el
+   significado.
+
+   > Sign in with Apple **verificado en dispositivo el 19/08** (usuario Firebase
+   > `4jhjsv78nj@privaterelay.appleid.com`, provider Apple). Como no hay fallback de
+   > email/password, que funcione es **la puerta de entrada del revisor** — si se rompe, no
+   > hay otra forma de entrar.
 
 > **Agreements/Tax/Banking NO se heredan de Play Store.** Son contratos aparte con Apple;
 > nada se transfiere. Como no hay librerías de IAP en `package.json`, basta con el

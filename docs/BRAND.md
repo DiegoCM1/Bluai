@@ -15,12 +15,12 @@ colors:
   brand-cyan: "#2ecaff"     # highlights, map accents
   brand-black: "#000000"    # true black, rarely used directly
   # Secondary / semantic (severity-bearing — see Colors section)
-  brand-purple: "#9200ff"   # advisory alerts, subtitle/hint text
-  brand-orange: "#ff8500"   # warning-level alerts
-  brand-yellow: "#ffce00"   # watch-level alerts
-  brand-green: "#00e774"    # safe / clear status
-  brand-red: "#e24337"      # emergency / zona roja / errors
-  brand-teal: "#4ed5de"     # map elements, secondary icons
+  brand-purple: "#9200ff"   # subtitle/hint text — NOT a severity color, see below
+  brand-orange: "#ff8500"   # SIAT NARANJA (level 4, peligro alto)
+  brand-yellow: "#ffce00"   # SIAT AMARILLO (level 3, peligro moderado)
+  brand-green: "#00e774"    # SIAT VERDE (level 2, peligro bajo); also success
+  brand-red: "#e24337"      # SIAT ROJO (level 5, peligro máximo); also error/validation
+  brand-teal: "#4ed5de"     # map elements, secondary icons — NOT a severity color
   # Surfaces — tokenized. Lives in tailwind.config.js as `brand-surface`;
   # reach for the class (`bg-brand-surface`), never the hex.
   brand-surface: "#0a1c32"
@@ -84,17 +84,25 @@ source of truth; theme.ts must follow it.
 
 **Alert severity → color (canonical mapping):**
 
-| Level | Token | Meaning |
-|---|---|---|
-| Safe / Clear | `brand-green` | No active threat |
-| Watch | `brand-yellow` | Conditions possible |
-| Advisory | `brand-purple` | Minor / informational |
-| Warning | `brand-orange` | Act soon |
-| Emergency | `brand-red` | Immediate danger / zona roja |
+Severity in this app *is* the official SIAT-CT 5-level scale — there is no separate
+"Safe/Watch/Advisory/Warning/Emergency" tier system, and `brand-purple` does not
+carry severity (nothing in the app maps a SIAT level to purple). The single source
+of truth for this table is code, not this doc — see
+`backend/app/features/siat/levels.py` and `frontend/utils/siatLevels.ts`; every
+screen that shows a SIAT color/label imports from one of those two.
+
+| Level | Color | Token | Danger |
+|---|---|---|---|
+| 1 | Azul | neutral gray `#6B7280` (informational-only, never pushes — deliberately not a brand token) | Peligro mínimo |
+| 2 | Verde | `brand-green` | Peligro bajo |
+| 3 | Amarillo | `brand-yellow` | Peligro moderado |
+| 4 | Naranja | `brand-orange` | Peligro alto |
+| 5 | Rojo | `brand-red` | Peligro máximo |
 
 `brand-red` doubles as the generic error/validation color (`text-brand-red`);
 `brand-green` doubles as success. `brand-teal`/`brand-cyan` are map/icon accents,
-**not** severity colors — don't use them to signal alert state.
+**not** severity colors — don't use them to signal alert state. `brand-purple` is
+reserved for hint/subtitle text, not severity.
 
 ---
 
@@ -177,7 +185,7 @@ See `rounded` tokens. In practice: `rounded-full` for pills/CTAs/tab bar,
 | `CTAButton` | 🎯 | Full-width, `rounded-full`, `brand-blue`, white uppercase `emphasis` text |
 | `DarkCard` | 🎯 | `brand-surface` bg, `rounded-2xl` content container |
 | `BottomTabBar` | 🎯 | Pill dark container, 4 tabs + elevated logo button, active = `brand-blue` |
-| `AlertMarker` (map) | 🎯 ⚠️ | Triangle + icon, color = severity. **TODO(design): the old marker spec (purple=watch, teal=advisory) CONTRADICTS the severity table above — confirm real colors against the map marker code before trusting either.** |
+| `AlertMarker` (map) | 🎯 | Triangle + icon, color = severity, sourced from `frontend/utils/siatLevels.ts` (see severity table above). |
 
 ---
 

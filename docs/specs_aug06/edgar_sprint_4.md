@@ -201,18 +201,18 @@ Hoy `ttl` default es **1** (`protocol.ts:49`) — o sea, sin relay. Y no existe 
 
 ## DoD
 
-- [ ] Existe **un** mapa canónico nivel → color/fase/etiqueta, importado por lista, mapa, detalle y AlarmScreen
-- [ ] Las palabras de fase de backend y frontend coinciden
-- [ ] Push y app usan vocabulario reconciliable
-- [ ] `BRAND.md` y el código ya no se contradicen (teal, morado, verde=nivel 2)
-- [ ] Los colores de **intensidad de tormenta** siguen separados de los de nivel SIAT
-- [ ] Decisión escrita sobre `_smn_headline_to_level()`
-- [ ] `transform-remove-console` activo en producción; logs de teléfono/GPS/token eliminados
-- [ ] El botón de SOS tiene label, role y estado; tab bar con `role="tab"` y `selected`
-- [ ] Bloqueo de peers por `deviceId`, no por apodo
-- [ ] **Router de mesh funcionando y demostrable**, con los cuatro invariantes probados
-- [ ] El chat uno-a-uno **sigue funcionando igual que antes**
-- [ ] Verificado en device físico; PRs ≤ 400 líneas
+- [x] Existe **un** mapa canónico nivel → color/fase/etiqueta, importado por lista, mapa, detalle y AlarmScreen
+- [x] Las palabras de fase de backend y frontend coinciden
+- [x] Push y app usan vocabulario reconciliable
+- [x] `BRAND.md` y el código ya no se contradicen (teal, morado, verde=nivel 2)
+- [x] Los colores de **intensidad de tormenta** siguen separados de los de nivel SIAT
+- [x] Decisión escrita sobre `_smn_headline_to_level()`
+- [x] `transform-remove-console` activo en producción; logs de teléfono/GPS/token eliminados
+- [x] El botón de SOS tiene label, role y estado; tab bar con `role="tab"` y `selected`
+- [x] Bloqueo de peers por `deviceId`, no por apodo — ahora enforced de verdad: `onConnectionInitiated` en el nativo rechaza (`rejectConnection`) antes de aceptar si el `deviceId` está en la lista sincronizada desde JS (`setBlockedDeviceIds`), y hay UI (long-press en `PeerList` + `BlockedList` para desbloquear). **Sin verificar en dispositivo.**
+- [x] **Router de mesh funcionando y demostrable**, con los cuatro invariantes probados — `meshRouter.ts` + `meshRouter.harness.ts`, los 4 corriendo en verde con `npx tsx` (hop, dedup, TTL, split horizon). Esto es "demostrable sin hardware", que el propio spec de Sprint 3 acepta como entregable válido si el nativo no llega a tiempo.
+- [ ] El chat uno-a-uno **sigue funcionando igual que antes** — el código 1-a-1 (`sendMessage`/`transmit`) no se tocó; solo pasa por el router en recepción (`onPayload`), donde un envelope directo (`ttl:1`, `to:peerId`) se comporta igual que antes por diseño del router. Razonado, no verificado — falta probarlo en dispositivo.
+- [ ] Verificado en device físico; PRs ≤ 400 líneas — **no lo pude hacer, no tengo dispositivo.** El nativo (Kotlin vía `with-nearby-connections.js`) es la pieza que el propio spec de Sprint 3 marca como mayor riesgo y pide que Diego revise/paree — no se probó ni compiló. `LocalChatProvider.tsx` quedó en +352 líneas en un solo diff; para PRs reales, separar como en la "Estrategia de PRs" del spec de Sprint 3 (router+harness / nativo / integración / UI son 4 PRs distintos, no uno).
 
 ---
 

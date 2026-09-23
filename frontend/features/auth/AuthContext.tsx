@@ -5,8 +5,8 @@ import {
   onAuthStateChanged,
   signInWithCredential,
   signOut as firebaseSignOut,
+  AppleAuthProvider,
   GoogleAuthProvider,
-  OAuthProvider,
   FirebaseAuthTypes,
 } from '@react-native-firebase/auth'
 import { GoogleSignin, statusCodes } from '@react-native-google-signin/google-signin'
@@ -108,6 +108,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         code: e?.code,
         message: e?.message,
       })
+      Sentry.captureException(e, {
+        tags: { flow: 'google-signin' },
+        extra: { code: e?.code },
+      })
       setError('No se pudo iniciar sesión. Intenta de nuevo.')
     } finally {
       setSigningIn(false)
@@ -151,11 +155,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         throw new Error('Apple Sign-In returned no identity token')
       }
 
-      const provider = new OAuthProvider('apple.com')
-      const credential = provider.credential({
-        idToken: appleCredential.identityToken,
+      // `AppleAuthProvider.credential` is **static** and takes two positional
+      // strings — (identityToken, rawNonce).
+      const credential = AppleAuthProvider.credential(
+        appleCredential.identityToken,
         rawNonce,
-      })
+      )
       await signInWithCredential(getAuth(), credential)
       await upsertUserProfile()
     } catch (e: any) {
@@ -163,6 +168,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('[Bluai] Apple Sign-In failed', {
         code: e?.code,
         message: e?.message,
+      })
+      Sentry.captureException(e, {
+        tags: { flow: 'apple-signin' },
+        extra: { code: e?.code },
       })
       setError('No se pudo iniciar sesión con Apple. Intenta de nuevo.')
     } finally {

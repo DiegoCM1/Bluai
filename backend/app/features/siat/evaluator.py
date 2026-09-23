@@ -1,12 +1,13 @@
 """
 SIAT-CT evaluator.
 
-Maps cyclone proximity + intensity to the five official SIAT-CT levels:
-  1 - AZUL      (aviso preventivo, > 72 h)
-  2 - VERDE     (preparación, 24–72 h)
-  3 - AMARILLO  (alerta, 12–24 h)
-  4 - NARANJA   (peligro alto, 6–12 h)
-  5 - ROJO      (impacto inminente / en curso, < 6 h)
+Maps cyclone proximity + intensity to the five official SIAT-CT levels
+(color + danger label defined in `levels.py`, the canonical source):
+  1 - AZUL      (peligro mínimo,  > 72 h)
+  2 - VERDE     (peligro bajo,    24–72 h)
+  3 - AMARILLO  (peligro moderado,12–24 h)
+  4 - NARANJA   (peligro alto,    6–12 h)
+  5 - ROJO      (peligro máximo,  < 6 h)
 
 Primary strategy: ETA-based (distance / movement speed), adjusted by heading:
 a cyclone heading toward the user keeps the full ETA-based level; one moving
@@ -27,14 +28,7 @@ Incorporating NHC forecast cone data would eliminate this in a future version.
 import math
 
 from app.features.siat.direction import angular_difference, bearing_deg, parse_movement_direction
-
-SIAT_COLORS: dict[int, str] = {
-    1: "AZUL",
-    2: "VERDE",
-    3: "AMARILLO",
-    4: "NARANJA",
-    5: "ROJO",
-}
+from app.features.siat.levels import siat_color
 
 MAX_THREAT_DISTANCE_KM = 1500
 # Beyond this range, even a fast-moving cyclone (20 km/h) takes > 75 h to arrive —
@@ -94,7 +88,7 @@ def evaluate_user(user_lat: float, user_lon: float, cyclone: dict) -> dict:
     if distance_km > MAX_THREAT_DISTANCE_KM:
         return {
             "siat_level": 1,
-            "siat_color": SIAT_COLORS[1],
+            "siat_color": siat_color(1),
             "distance_km": round(distance_km, 2),
             "eta_hours": None,
             "reason": (
@@ -136,7 +130,7 @@ def evaluate_user(user_lat: float, user_lon: float, cyclone: dict) -> dict:
 
     return {
         "siat_level": level,
-        "siat_color": SIAT_COLORS[level],
+        "siat_color": siat_color(level),
         "distance_km": round(distance_km, 2),
         "eta_hours": round(eta_hours, 2) if eta_hours is not None else None,
         "reason": reason,

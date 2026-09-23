@@ -68,6 +68,7 @@ export default function AlarmScreen() {
           <View className="flex-row justify-between mb-6">
             <TouchableOpacity
               onPress={handleMap}
+              accessibilityRole="button"
               className="flex-1 mr-2 py-3 rounded-lg items-center"
               style={{ backgroundColor: buttonColor }}
             >
@@ -78,6 +79,7 @@ export default function AlarmScreen() {
               <TouchableOpacity
                 className="flex-1 ml-2 py-3 rounded-lg items-center"
                 style={{ backgroundColor: buttonColor }}
+                accessibilityRole="button"
                 onPress={() => console.log('[QA_NAV] AlarmScreen → más info | alertId:', alertData.id ?? 'none', '| href:', alertData.id ? `/alerts/${alertData.id}` : "/alerts")}
               >
                 <Text className="font-bold" style={{ color: baseColor }}>Más información</Text>
@@ -88,6 +90,8 @@ export default function AlarmScreen() {
           {/* Cerrar */}
           <TouchableOpacity
             onPress={handleClose}
+            accessibilityRole="button"
+            accessibilityLabel="Cerrar"
             className="py-2 rounded-lg items-center border-2"
             style={{ borderColor: baseColor }}
           >

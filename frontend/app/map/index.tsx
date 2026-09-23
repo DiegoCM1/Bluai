@@ -25,23 +25,19 @@ import MapView, {
   Callout,
 } from "react-native-maps";
 import * as Location from "expo-location";
-import { syncLocationToBackend } from "../../utils/locationSync";
+import useUserLocation from "./_hooks/useUserLocation";
 import { toast } from "sonner-native";
 import {
   canReportFromLocation,
-  createZone,
-  deleteZone,
   formatRelativeTime,
-  generateZoneId,
   loadActiveCyclones,
-  loadZones,
-  reverseGeocodeAddress,
-  syncCachedZones,
-  updateZone,
-  voteZone,
   type ActiveCyclone,
 } from "./service";
+import useZones from "./_hooks/useZones";
+import { useNetwork } from "../../features/network/NetworkContext";
+import { useAuth } from "../../features/auth/AuthContext";
 import { darkMapStyle } from "./mapStyle";
+import { colorForLevel as siatColorForLevel } from "../../utils/siatLevels";
 import {
   DEFAULT_REGION,
   REPORTING_DISTANCE_METERS,
@@ -99,22 +95,11 @@ interface MapProps {
 }
 
 // SIAT level (this user's risk) — used only for the focusLat/focusLon marker
-// that comes from a push notification.
-// Tokens de marca, no hex sueltos. Antes eran los colores POR DEFECTO de Material
-// (#F44336 = Red 500, #FF9800 = Orange 500, #FFC107 = Amber 500, #4CAF50 = Green 500):
-// la paleta de Google encima de un mapa navy hecho a medida. Por eso los marcadores se
-// sentían pegados de otra app — los tonos se parecen lo suficiente para verse
-// intencionales y difieren lo suficiente para chocar.
-// El mapeo severidad → color es el canónico de docs/BRAND.md.
-const LEVEL_COLORS: Record<number, string> = {
-  1: colors.brandGreen, // Safe
-  2: colors.brandGreen, // Safe
-  3: colors.brandYellow, // Watch
-  4: colors.brandOrange, // Warning
-  5: colors.brandRed, // Emergency
-};
+// that comes from a push notification. Colors come from the canonical
+// utils/siatLevels.ts, not a local copy — see docs/specs_aug06/edgar_sprint_4.md
+// Bloque 1 for why that used to be a separate (and mismatched) palette here.
 
-// Storm intensity classification — deliberately separate from LEVEL_COLORS.
+// Storm intensity classification — deliberately separate from SIAT level colors.
 // A weak depression heading straight at someone can carry a high SIAT level,
 // so mixing the two palettes would misrepresent one or the other.
 // La separación es de SIGNIFICADO; la paleta sí se comparte, para que el mapa no
@@ -165,7 +150,7 @@ const HurricaneMarker = React.memo(function HurricaneMarker({
   console.log("[QA_MAP] HurricaneMarker render | lat:", lat, "| lon:", lon);
   const color = categoryCode
     ? (CATEGORY_COLORS[categoryCode] ?? CATEGORY_COLORS.TD)
-    : LEVEL_COLORS[level ?? 3];
+    : siatColorForLevel(level ?? 3);
   return (
     <Marker
       coordinate={{ latitude: lat, longitude: lon }}
@@ -355,6 +340,10 @@ const ZoneMarker = React.memo(function ZoneMarker({
         style={{
           width: zone.type === "ayuda" ? 44 : 38,
           height: zone.type === "ayuda" ? 44 : 38,
+          // Queued reports read as provisional. Safe as a static style: it is a fixed
+          // value, not a fade, so it cannot be captured mid-animation the way the
+          // fadeDuration note below describes.
+          opacity: zone.pending ? 0.55 : 1,
         }}
         resizeMode="contain"
         // Android fades images in (~300ms). Without this, tracksViewChanges freezes the
@@ -388,18 +377,12 @@ export default function WeatherMapNativewind({
   const [showEvents, setShowEvents] = useState(true);
   const [layerModalVisible, setLayerModalVisible] = useState(false);
   const mapRef = useRef<MapView>(null);
-  const [userLocation, setUserLocation] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
 
-  const [zones, setZones] = useState<Zone[]>([]);
   const [isAddingMode, setIsAddingMode] = useState(false);
   const [pendingLocation, setPendingLocation] = useState<{
     latitude: number;
     longitude: number;
   } | null>(null);
-  const [selectedZone, setSelectedZone] = useState<Zone | null>(null);
   const [selectedType, setSelectedType] = useState<ZoneType | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
@@ -408,15 +391,24 @@ export default function WeatherMapNativewind({
   const [zoneDescription, setZoneDescription] = useState("");
   const [descriptionError, setDescriptionError] = useState(false);
   const [isSosSending, setIsSosSending] = useState(false);
-  const [currentCoords, setCurrentCoords] = useState<{
-    latitude: number;
-    longitude: number;
-  } | null>(null);
   const [hasPendingSOS, setHasPendingSOS] = useState(false);
+
+  // Declared up here because the SOS reconnect effect below lists `onReconnect` in its
+  // dependency array, which is evaluated during render — a later `const` would be in its
+  // temporal dead zone and throw. `isOnline` is used only for banner wording, since
+  // useZones collapses "offline" and "refresh failed" into one isStale flag.
+  const { isOnline, onReconnect } = useNetwork();
+  // Gates the cyclone fetch: authFetch throws before touching the network when there is
+  // no Firebase session, and on a cold start this screen focuses first.
+  const { user } = useAuth();
   const [linkedContactCount, setLinkedContactCount] = useState<number | null>(
     null,
   );
   const [activeCyclones, setActiveCyclones] = useState<ActiveCyclone[]>([]);
+  // Falso hasta que el servidor conteste al menos una vez. Distingue "no hay ciclones"
+  // de "no pudimos preguntar" — sin esto, una lista vacía por fallo de red, token
+  // caducado o servidor caído se presentaba como la ausencia de huracanes.
+  const [cyclonesLoaded, setCyclonesLoaded] = useState(false);
 
   // Tutorial 1. Suppressed whenever the user did not arrive here to look around:
   // a deep link from a hurricane alert or an SOS (focus* props), or an SOS still
@@ -498,12 +490,23 @@ export default function WeatherMapNativewind({
   // hasta que el usuario cierre y reabra la app.
   useFocusEffect(
     useCallback(() => {
+      // Sin sesión de Firebase no se intenta: loadActiveCyclones pasa por authFetch, que
+      // lanza 'Not authenticated' antes de tocar la red. Al arrancar en frío este efecto
+      // ganaba la carrera a onAuthStateChanged, fallaba, y el siguiente intento era el
+      // del intervalo — hasta 60s sin ciclones en un arranque perfectamente normal, y
+      // con conexión. Mismo criterio que useAlerts, que usa una clave SWR nula sin user.
+      if (!user) return;
+
       let isActive = true;
 
       const fetchCyclones = async () => {
         try {
           const cyclones = await loadActiveCyclones();
-          if (isActive) setActiveCyclones(cyclones);
+          if (!isActive) return;
+          setActiveCyclones(cyclones);
+          // Una respuesta del servidor es la ÚNICA prueba de que "no hay ciclones"
+          // significa eso y no "no se pudo consultar".
+          setCyclonesLoaded(true);
         } catch (error) {
           console.warn("[Map] Failed to load active cyclones:", error);
         }
@@ -516,7 +519,7 @@ export default function WeatherMapNativewind({
         isActive = false;
         clearInterval(interval);
       };
-    }, []),
+    }, [user]),
   );
 
   // Al volver a foreground (desde background): re-chequear cola tras flush de _layout
@@ -529,14 +532,25 @@ export default function WeatherMapNativewind({
     return () => sub.remove();
   }, []);
 
+  // Al recuperar señal: vaciar la cola de SOS de inmediato. Hasta ahora los únicos
+  // disparadores eran enfocar la pantalla y volver a primer plano, así que un usuario
+  // que se quedaba mirando el mapa mientras volvía la señal conservaba un SOS sin
+  // entregar indefinidamente — justo el caso de una emergencia con cobertura
+  // intermitente.
+  useEffect(
+    () =>
+      onReconnect(() => {
+        flushSOSQueue().then(() => hasPendingSOSItem().then(setHasPendingSOS));
+      }),
+    [onReconnect],
+  );
+
   useEffect(() => {
     if (focusLat == null || focusLon == null) return;
-    console.log(
-      "[QA_MAP] focus useEffect fired | focusLat:",
-      focusLat,
-      "| focusLon:",
-      focusLon,
-    );
+    // focusLat/focusLon are not logged here — this fires for cyclone alerts
+    // AND for an SOS focus (focusSosPhone set), where they're a real person's
+    // live GPS, not a public cyclone position.
+    console.log("[QA_MAP] focus useEffect fired | isSos:", focusSosPhone !== undefined);
     // Don't update region state — recenter button must always go to user location
     mapRef.current?.animateToRegion(
       {
@@ -554,6 +568,17 @@ export default function WeatherMapNativewind({
   // this they're effectively invisible even though they're plotted correctly.
   const focusActiveCyclones = () => {
     if (activeCyclones.length === 0) {
+      // Una lista vacía sólo significa "no hay ciclones" si el servidor llegó a
+      // contestar. Antes, sin conexión / con el token caducado / durante la carrera de
+      // arranque, la app afirmaba que no había huracanes cuando simplemente no había
+      // podido preguntar — en una app de aviso temprano, el peor error posible.
+      if (!cyclonesLoaded) {
+        toast.error("No se pudo consultar", {
+          description:
+            "No hemos podido comprobar si hay ciclones activos. Revisa tu conexión.",
+        });
+        return;
+      }
       toast("Sin ciclones activos", {
         description:
           "No hay huracanes o tormentas tropicales activos en este momento.",
@@ -571,102 +596,61 @@ export default function WeatherMapNativewind({
     });
   };
 
-  useEffect(() => {
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    (async () => {
-      try {
-        let { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          console.warn("Location permission denied - using default region");
-          return;
-        }
-
-        const timeoutPromise = new Promise<never>((_, reject) => {
-          timeoutId = setTimeout(
-            () => reject(new Error("Location timeout")),
-            15000,
-          );
-        });
-
-        const { coords } = await Promise.race([
-          Location.getCurrentPositionAsync({
-            accuracy: Location.Accuracy.Balanced,
-          }),
-          timeoutPromise,
-        ]);
-
-        clearTimeout(timeoutId);
-
-        const userRegion = {
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-          latitudeDelta: 0.1,
-          longitudeDelta: 0.1,
-        };
-
-        setUserLocation({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
-        setCurrentCoords({
-          latitude: coords.latitude,
-          longitude: coords.longitude,
-        });
-        syncLocationToBackend(coords.latitude, coords.longitude);
-        // Always update region to user location — recenter button depends on this
-        setRegion(userRegion);
-        if (focusLat != null && focusLon != null) {
-          console.log(
-            "[QA_MAP] GPS resolved with focus — fitToCoordinates | cyclone:",
-            focusLat,
-            focusLon,
-            "| user:",
-            coords.latitude,
-            coords.longitude,
-          );
-          mapRef.current?.fitToCoordinates(
-            [
-              { latitude: focusLat, longitude: focusLon },
-              { latitude: coords.latitude, longitude: coords.longitude },
-            ],
-            {
-              edgePadding: { top: 80, right: 60, bottom: 120, left: 60 },
-              animated: true,
-            },
-          );
-        } else {
-          mapRef.current?.animateToRegion(userRegion, 1000);
-        }
-      } catch (error) {
-        console.warn(
-          "⚠️ Could not get location (timeout or error), using default region:",
-          error.message,
+  // GPS lives in useUserLocation now. The camera decision stays HERE because it is the
+  // only part that depends on focusLat/focusLon, which belong to this screen's props.
+  const { userLocation, currentCoords } = useUserLocation({
+    onPositionFixed: (coords) => {
+      const userRegion = {
+        latitude: coords.latitude,
+        longitude: coords.longitude,
+        latitudeDelta: 0.1,
+        longitudeDelta: 0.1,
+      };
+      // Always update region to user location — recenter button depends on this
+      setRegion(userRegion);
+      if (focusLat != null && focusLon != null) {
+        // Neither the user's own GPS nor focusLat/focusLon are logged here —
+        // focusLat/focusLon can be a real person's GPS (SOS focus), not
+        // necessarily a public cyclone position. See the focus useEffect above.
+        console.log("[QA_MAP] GPS resolved with focus — fitToCoordinates | isSos:", focusSosPhone !== undefined);
+        mapRef.current?.fitToCoordinates(
+          [
+            { latitude: focusLat, longitude: focusLon },
+            { latitude: coords.latitude, longitude: coords.longitude },
+          ],
+          {
+            edgePadding: { top: 80, right: 60, bottom: 120, left: 60 },
+            animated: true,
+          },
         );
+      } else {
+        mapRef.current?.animateToRegion(userRegion, 1000);
       }
-    })();
+    },
+  });
 
-    return () => {
-      if (timeoutId) clearTimeout(timeoutId);
-    };
-  }, []);
+  // Resolved lazily so the vote path never reads map-camera state directly: `region` is
+  // chrome, and having a mutation reach into it is what made handleVoteZone the widest
+  // closure in this file.
+  const getVoterLocation = useCallback(
+    () =>
+      currentCoords ??
+      userLocation ?? { latitude: region.latitude, longitude: region.longitude },
+    [currentCoords, userLocation, region.latitude, region.longitude],
+  );
 
-  useEffect(() => {
-    if (!userLocation) return;
+  const {
+    zones,
+    isStale,
+    pendingCount,
+    selectedZone,
+    selectZone,
+    createReport,
+    voteOnZone,
+    editZone,
+    removeZone,
+  } = useZones({ userLocation, getVoterLocation });
 
-    (async () => {
-      try {
-        const loaded = await loadZones({
-          latitude: userLocation.latitude,
-          longitude: userLocation.longitude,
-        });
-        const valid = loaded.filter((z: Zone) => z.type && ZONE_TYPES[z.type]);
-        setZones(valid);
-      } catch (error) {
-        console.error("[Map] Failed to load zones:", error);
-      }
-    })();
-  }, [userLocation]);
 
   const handleToggleAddingMode = () => {
     setIsAddingMode((prev) => !prev);
@@ -698,39 +682,16 @@ export default function WeatherMapNativewind({
   };
 
   const handleCirclePress = (zone: Zone) => {
-    setSelectedZone(zone);
+    selectZone(zone);
     setEditDescription(zone.description);
     setShowDetailModal(true);
   };
 
   const handleSaveEdit = () => {
     if (!selectedZone || !editDescription.trim()) return;
-    const updated: Zone = {
-      ...selectedZone,
-      description: editDescription.trim(),
-    };
-    setZones((prev) => prev.map((z) => (z.id === updated.id ? updated : z)));
-    setSelectedZone(updated);
     setIsEditing(false);
-    updateZone(updated)
-      .then((savedZone) => {
-        setZones((prev) => {
-          const next = prev.map((z) => (z.id === savedZone.id ? savedZone : z));
-          syncCachedZones(next);
-          return next;
-        });
-        setSelectedZone(savedZone);
-      })
-      .catch((error) => {
-        console.error("[Map] Failed to update zone:", error);
-        setZones((prev) =>
-          prev.map((z) => (z.id === selectedZone.id ? selectedZone : z)),
-        );
-        setSelectedZone(selectedZone);
-        toast.error("Error al editar", {
-          description: "No se pudo guardar el cambio",
-        });
-      });
+    // Optimistic update, rollback and offline queueing all live in useZones now.
+    editZone(selectedZone, editDescription);
   };
 
   const handleDeleteZone = () => {
@@ -742,24 +703,9 @@ export default function WeatherMapNativewind({
         style: "destructive",
         onPress: () => {
           const deleted = selectedZone;
-          setZones((prev) => prev.filter((z) => z.id !== deleted.id));
           setShowDetailModal(false);
           setIsEditing(false);
-          deleteZone(deleted.id)
-            .then(() => {
-              setZones((prev) => {
-                const next = prev.filter((z) => z.id !== deleted.id);
-                syncCachedZones(next);
-                return next;
-              });
-            })
-            .catch((error) => {
-              console.error("[Map] Failed to delete zone:", error);
-              setZones((prev) => [...prev, deleted]);
-              toast.error("Error al eliminar", {
-                description: "No se pudo eliminar la zona",
-              });
-            });
+          removeZone(deleted);
         },
       },
     ]);
@@ -767,39 +713,7 @@ export default function WeatherMapNativewind({
 
   const handleVoteZone = (value: 1 | -1) => {
     if (!selectedZone) return;
-
-    const voterLocation = currentCoords ??
-      userLocation ?? {
-        latitude: region.latitude,
-        longitude: region.longitude,
-      };
-
-    voteZone(selectedZone.id, value, voterLocation)
-      .then((votedZone) => {
-        setZones((prev) => {
-          const next = prev.map((zone) =>
-            zone.id === votedZone.id ? votedZone : zone,
-          );
-          syncCachedZones(next);
-          return next;
-        });
-        setSelectedZone(votedZone);
-        toast.success(
-          value === 1 ? "Evento confirmado" : "Evento marcado como engañoso",
-          {
-            description: "Tu voto se registró correctamente",
-          },
-        );
-      })
-      .catch((error) => {
-        console.error("[Map] Failed to vote zone:", error);
-        toast.error("No se pudo votar", {
-          description:
-            value === 1
-              ? "Debes estar cerca del evento para confirmarlo"
-              : "Debes estar cerca del evento para marcarlo como engañoso",
-        });
-      });
+    voteOnZone(selectedZone.id, value);
   };
 
   const handleSaveZone = () => {
@@ -821,52 +735,24 @@ export default function WeatherMapNativewind({
       return;
     }
 
-    const newZone: Zone = {
-      id: generateZoneId(),
+    const report = {
       latitude: pendingLocation.latitude,
       longitude: pendingLocation.longitude,
       description: zoneDescription.trim(),
-      timestamp: new Date().toISOString(),
-      radius: 500,
       type: selectedType,
-      isOwner: true, // you created it → you own it, until the server confirms with the real record
     };
 
-    setZones((prev) => [...prev, newZone]);
     setShowAddModal(false);
     setPendingLocation(null);
     setZoneDescription("");
     setSelectedType(null);
     setDescriptionError(false);
-    toast.success("Zona reportada", { description: "Gracias por tu reporte" });
 
-    // Geocode in the background so the optimistic marker/toast appear instantly,
-    // then persist the event WITH the resolved address (null → coords fallback).
-    (async () => {
-      const address = await reverseGeocodeAddress(
-        newZone.latitude,
-        newZone.longitude,
-      );
-      if (address) {
-        setZones((prev) =>
-          prev.map((z) => (z.id === newZone.id ? { ...z, address } : z)),
-        );
-      }
-      try {
-        const savedZone = await createZone({ ...newZone, address });
-        setZones((prev) => {
-          const next = prev.map((z) => (z.id === newZone.id ? savedZone : z));
-          syncCachedZones(next);
-          return next;
-        });
-      } catch (error) {
-        console.error("[Map] Failed to save zone:", error);
-        setZones((prev) => prev.filter((z) => z.id !== newZone.id));
-        toast.error("Error al guardar", {
-          description: "No se pudo guardar la zona",
-        });
-      }
-    })();
+    // No success toast here any more. The old code claimed "Zona reportada" BEFORE the
+    // write was attempted, then contradicted itself seconds later when it failed and
+    // deleted the marker. useZones now toasts once, after the report is durable —
+    // written to the server, or queued for replay.
+    createReport(report);
   };
 
   const handleCancelAdd = () => {
@@ -890,10 +776,10 @@ export default function WeatherMapNativewind({
 
   const doSendSOS = async () => {
     setIsSosSending(true);
+    let lat: number | undefined;
+    let lon: number | undefined;
     try {
       // 1. Obtener GPS primero (funciona sin internet)
-      let lat: number | undefined;
-      let lon: number | undefined;
       let gpsFailed = false;
       let permDenied = false;
       let usedFallbackCoords = false;
@@ -1006,16 +892,35 @@ export default function WeatherMapNativewind({
         return;
       }
 
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
       setHasPendingSOS(false);
-      if (data.notified_count === 0) {
+      if (data?.notified_count === 0) {
         toast.info("SOS enviado", {
           description:
             "No tienes contactos vinculados. Agrégalos en tu perfil.",
         });
       } else {
         toast.success("SOS enviado", {
-          description: `${data.notified_count} contacto(s) notificado(s).`,
+          description:
+            data?.notified_count != null
+              ? `${data.notified_count} contacto(s) notificado(s).`
+              : "Tus contactos fueron notificados.",
+        });
+      }
+    } catch (error) {
+      console.error("[Map] Unexpected SOS failure:", error);
+      try {
+        await enqueueSOS(lat, lon);
+        setHasPendingSOS(true);
+        toast.info("SOS guardado", {
+          description: "Se enviará cuando recuperes conexión.",
+        });
+      } catch (queueError) {
+        // Ni enviar ni guardar. Único caso que hay que decir claro y sin adornos:
+        // creer que un SOS salió cuando no salió es el peor final posible aquí.
+        console.error("[Map] Failed to queue SOS after failure:", queueError);
+        toast.error("SOS no enviado", {
+          description: "No se pudo enviar ni guardar. Intenta de nuevo.",
         });
       }
     } finally {
@@ -1109,7 +1014,13 @@ export default function WeatherMapNativewind({
         {showEvents &&
           zones.map((zone) => (
             <ZoneMarker
-              key={zone.id}
+              // Pending state is part of the key ON PURPOSE. ZoneMarker sets
+              // tracksViewChanges={false} once its image loads, which freezes the native
+              // bitmap — so when a queued report syncs and `pending` flips to false, the
+              // new opacity would never be painted and the marker would stay dimmed for
+              // the rest of the session. Changing the key remounts it, forcing a repaint
+              // exactly once, at the moment it syncs.
+              key={`${zone.id}:${zone.pending ? "pending" : "synced"}`}
               zone={zone}
               onPress={() => handleCirclePress(zone)}
             />
@@ -1376,6 +1287,9 @@ export default function WeatherMapNativewind({
         <TouchableOpacity
           onPress={handleSOSTrigger}
           disabled={isSosSending}
+          accessibilityLabel="Enviar SOS"
+          accessibilityRole="button"
+          accessibilityState={{ disabled: isSosSending, busy: isSosSending }}
           style={{
             width: FAB_SIZE,
             height: FAB_SIZE,
@@ -1460,6 +1374,47 @@ export default function WeatherMapNativewind({
             style={{ color: "#fff", fontFamily: fonts.poppins, fontSize: 13 }}
           >
             SOS pendiente de envío
+          </Text>
+        </View>
+      )}
+
+      {/* Datos guardados / sin conexión. Hasta ahora el mapa caía al caché en silencio
+          (service.ts devolvía lo mismo en ambos casos), así que un reporte de hace dos
+          días se veía idéntico a uno en vivo. Se coloca debajo del aviso de SOS cuando
+          ambos están visibles: ese banner está anclado en top:60 y mide ~34. */}
+      {isStale && (
+        <View
+          style={{
+            position: "absolute",
+            top: hasPendingSOS ? 104 : 60,
+            left: 16,
+            right: 16,
+            backgroundColor: colors.brandSurface + "ee",
+            borderRadius: 10,
+            paddingHorizontal: 14,
+            paddingVertical: 8,
+            flexDirection: "row",
+            alignItems: "center",
+          }}
+        >
+          <MaterialCommunityIcons
+            name={isOnline ? "cloud-alert" : "cloud-off-outline"}
+            size={16}
+            color={colors.brandYellow}
+            style={{ marginRight: 8 }}
+          />
+          <Text
+            style={{
+              color: "#fff",
+              fontFamily: fonts.poppins,
+              fontSize: 13,
+              flexShrink: 1,
+            }}
+          >
+            {isOnline
+              ? "No se pudo actualizar. Mostrando datos guardados"
+              : "Sin conexión. Mostrando datos guardados"}
+            {pendingCount > 0 ? ` · ${pendingCount} por enviar` : ""}
           </Text>
         </View>
       )}
@@ -1935,6 +1890,42 @@ export default function WeatherMapNativewind({
                         ? `${selectedZone.distanceKm.toFixed(1)} km`
                         : "Sin calcular"}
                     </Text>
+
+                    {/* El marcador atenuado es una pista, no un mensaje: a media opacidad
+                        podría leerse como "lejano" o "resuelto". Aquí se dice explícito,
+                        y así el estado no depende solo de un matiz visual. */}
+                    {selectedZone.pending && (
+                      <View
+                        style={{
+                          flexDirection: "row",
+                          alignItems: "center",
+                          gap: 8,
+                          paddingVertical: 10,
+                          paddingHorizontal: 14,
+                          borderRadius: 10,
+                          marginBottom: 20,
+                          backgroundColor: `${colors.brandOrange}22`,
+                          borderWidth: 1,
+                          borderColor: `${colors.brandOrange}66`,
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name="clock-outline"
+                          size={16}
+                          color={colors.brandOrange}
+                        />
+                        <Text
+                          style={{
+                            color: "#fff",
+                            fontFamily: fonts.poppins,
+                            fontSize: 13,
+                            flexShrink: 1,
+                          }}
+                        >
+                          Pendiente de envío. Solo tú lo ves hasta que recuperes conexión.
+                        </Text>
+                      </View>
+                    )}
 
                     {/* Voting (non-owner only) — collapses to a result chip once you've voted */}
                     {!selectedZone.isOwner &&

@@ -11,12 +11,15 @@ A "tool" here is three things bound together:
 """
 
 import logging
-from datetime import datetime
+from datetime import datetime, timezone as dt_timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 
 from app.core.config import settings
+from app.core.database import AsyncSessionLocal
+from app.features.siat.levels import siat_title
+from app.features.siat.service import assess_location
 
 logger = logging.getLogger(__name__)
 
@@ -126,6 +129,88 @@ async def web_search(query: str) -> str:
     return _format_tavily(data, query)
 
 
+# === get_nearby_cyclones ===================================================
+# Zero SIAT logic lives here. All scoring comes from siat.assess_location()
+# and the level wording from siat.levels, so a SIAT change reaches the chat
+# with no edits to this file. This section only turns the result into text.
+
+_MAX_THREATS_LISTED = 3
+
+
+def _advisory_age(advisory_time: datetime | None) -> str:
+    """'aviso de hace 2 h': relative, so it needs no timezone to read right."""
+    if advisory_time is None:
+        return ""
+    if advisory_time.tzinfo is None:
+        advisory_time = advisory_time.replace(tzinfo=dt_timezone.utc)
+    minutes = max(0, int((datetime.now(dt_timezone.utc) - advisory_time).total_seconds() // 60))
+    age = f"{minutes} min" if minutes < 60 else f"{minutes // 60} h"
+    return f" (aviso de hace {age})"
+
+
+def _format_cyclones(assessments: list[dict]) -> str:
+    """Compact Spanish summary of assess_location() output for the model."""
+    threats = [a for a in assessments if not a["out_of_range"]]
+    distant = [a for a in assessments if a["out_of_range"]]
+
+    lines: list[str] = []
+    if threats:
+        lines.append("Ciclones que pueden afectar la ubicación del usuario:")
+        for a in threats[:_MAX_THREATS_LISTED]:
+            eta = a["eta_hours"]
+            if eta is None:
+                arrival = "estacionario, sin hora estimada de llegada"
+            elif eta < 1:
+                arrival = "llegada estimada en menos de 1 h"
+            else:
+                arrival = f"llegada estimada en {eta:.0f} h"
+            lines.append(
+                f"- {a['name']} ({a['category_label']}): {siat_title(a['siat_level'])}. "
+                f"A {a['distance_km']:.0f} km, {arrival}{_advisory_age(a['advisory_time'])}."
+            )
+        # Least severe ones are the ones cut (input is worst-first), but say so,
+        # never drop a threat silently.
+        if len(threats) > _MAX_THREATS_LISTED:
+            lines.append(f"(+{len(threats) - _MAX_THREATS_LISTED} ciclón(es) más de menor nivel)")
+    else:
+        lines.append("Ningún ciclón activo representa amenaza para la ubicación del usuario.")
+
+    if distant:
+        names = ", ".join(f"{a['name']} ({a['distance_km']:.0f} km)" for a in distant)
+        lines.append(f"Ciclones activos lejanos, sin amenaza: {names}.")
+
+    lines.append("Fuente: SIAT-CT de Bluai con datos del NHC.")
+    return "\n".join(lines)
+
+
+async def get_nearby_cyclones(latitude: float | None = None, longitude: float | None = None) -> str:
+    """Active cyclones assessed against the user's location, as model-ready text.
+
+    Four outcomes, each worded differently on purpose. "Lookup failed" must
+    never read like "no cyclones": telling someone there's no hurricane
+    because the DB hiccuped is the worst failure this tool can have.
+    """
+    if latitude is None or longitude is None:
+        return (
+            "No tengo la ubicación del usuario, así que no puedo evaluar ciclones "
+            "cercanos. Pídele que active la ubicación en la app."
+        )
+
+    try:
+        async with AsyncSessionLocal() as db:
+            assessments = await assess_location(db, latitude, longitude)
+    except Exception as exc:
+        logger.error("[tool:get_nearby_cyclones] lookup failed: %s", exc, exc_info=True)
+        return (
+            "No fue posible consultar los ciclones activos en este momento. "
+            "No afirmes que no hay ciclones; remite al usuario al SMN / CONAGUA."
+        )
+
+    if not assessments:
+        return "No hay ciclones activos registrados en este momento. Fuente: SIAT-CT de Bluai con datos del NHC."
+    return _format_cyclones(assessments)
+
+
 GET_DATETIME_SCHEMA = {
     "type": "function",
     "function": {
@@ -173,24 +258,50 @@ WEB_SEARCH_SCHEMA = {
 }
 
 
+# No parameters on purpose: the location comes from the request (bound in
+# build_tool_handlers), never from the model, so it can't guess coordinates.
+GET_NEARBY_CYCLONES_SCHEMA = {
+    "type": "function",
+    "function": {
+        "name": "get_nearby_cyclones",
+        "description": (
+            "Consulta los ciclones tropicales activos (huracanes, tormentas y depresiones tropicales) y evalúa su amenaza para la ubicación actual del usuario con la escala oficial SIAT-CT: nivel de peligro, distancia y hora estimada de llegada. Úsala ANTES que web_search ante cualquier pregunta sobre huracanes, tormentas o ciclones cerca del usuario, o sobre si está en peligro. Usa automáticamente la ubicación del usuario; no necesita parámetros."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        },
+    },
+}
+
+
 # --- The registry the agent loop consumes ----------------------------------
 # name -> handler. Static default map (used by tests / when there's no request
 # context). The agent loop uses build_tool_handlers() to bind per-request state.
 TOOL_HANDLERS = {
     "get_datetime": get_datetime,
     "web_search": web_search,
+    "get_nearby_cyclones": get_nearby_cyclones,  # no request context -> "no location" answer
 }
 
 TOOL_SCHEMAS = [
     GET_DATETIME_SCHEMA,
     WEB_SEARCH_SCHEMA,
+    GET_NEARBY_CYCLONES_SCHEMA,
 ]
 
 
 WEB_SEARCH_BUDGET = 2  # max Tavily calls per assistant turn (credit protection)
 
 
-def build_tool_handlers(*, user_timezone: str | None = None, web_search_budget: int = WEB_SEARCH_BUDGET) -> dict:
+def build_tool_handlers(
+    *,
+    user_timezone: str | None = None,
+    latitude: float | None = None,
+    longitude: float | None = None,
+    web_search_budget: int = WEB_SEARCH_BUDGET,
+) -> dict:
     """Build request-scoped tool handlers with the current user's context baked in.
 
     Module-level TOOL_HANDLERS is created once at import — long before any
@@ -205,6 +316,10 @@ def build_tool_handlers(*, user_timezone: str | None = None, web_search_budget: 
     it in CODE — a prompt nudge can only ask, this guarantees. Past the budget,
     the tool short-circuits (no Tavily call, no credit) and tells the model to
     answer with what it already has.
+
+    The user's coordinates are bound the same way. get_nearby_cyclones takes
+    no parameters from the model, so it always evaluates the location the
+    request came from, never one the model guessed.
     """
     user_tz = user_timezone or DEFAULT_TZ
     state = {"web_searches": 0}
@@ -222,7 +337,16 @@ def build_tool_handlers(*, user_timezone: str | None = None, web_search_budget: 
         state["web_searches"] += 1
         return await web_search(query)
 
+    async def _get_nearby_cyclones(**ignored) -> str:
+        # The schema has no parameters, but models sometimes invent one (e.g.
+        # {"location": "Cancún"}). Ignore it instead of failing the tool with a
+        # TypeError: the answer is always for the request's own coordinates.
+        if ignored:
+            print(f"[tool:get_nearby_cyclones] ignoring model-supplied args: {ignored!r}")
+        return await get_nearby_cyclones(latitude, longitude)
+
     return {
         "get_datetime": _get_datetime,
         "web_search": _web_search,
+        "get_nearby_cyclones": _get_nearby_cyclones,
     }

@@ -26,6 +26,7 @@ interface AlertData {
   level: number;
   title: string;
   short?: string;
+  ai_summary?: string | null;
   timestamp: string;
   score?: number;
   recommendations?: string[];
@@ -115,6 +116,12 @@ export default function AlertDetailsScreen() {
 
   useEffect(() => {
     if (!alert) return
+    // Already generated once at ingestion (SMN bulletins) — reuse it instead
+    // of paying for another LLM call on every screen view.
+    if (alert.ai_summary) {
+      setAiSummary(alert.ai_summary)
+      return
+    }
     setAiLoading(true)
     let live = true
     const controller = new AbortController()

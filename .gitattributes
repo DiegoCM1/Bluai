@@ -1,0 +1,3 @@
+
+# Preserve PDF byte offsets and binary contents.
+*.pdf binary

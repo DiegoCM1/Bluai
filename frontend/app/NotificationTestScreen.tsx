@@ -147,7 +147,7 @@ export default function NotificationTestScreen() {
         console.warn("[SIAT] inject-cyclone 403 — sin acceso");
         toast.error("Sin acceso", {
           description:
-            "Pide que agreguen tu email a NOTIFICATION_TEST_ADMIN_EMAILS en backend/.env",
+            "Pide que agreguen tu email o número a NOTIFICATION_TEST_ADMIN_EMAILS / NOTIFICATION_TEST_ADMIN_PHONES en backend/.env",
         });
         return;
       }

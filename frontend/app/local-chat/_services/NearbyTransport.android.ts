@@ -11,9 +11,12 @@ type NativeNearby = {
   startDiscovery: () => Promise<boolean>;
   stopDiscovery: () => Promise<boolean>;
   requestConnection: (endpointId: string) => Promise<boolean>;
-  sendMessage: (message: string) => Promise<boolean>;
-  disconnect: () => Promise<boolean>;
+  /** Directed: targets one specific connected endpoint (P2P_CLUSTER holds several). */
+  sendMessage: (endpointId: string, message: string) => Promise<boolean>;
+  /** endpointId omitted → disconnect everyone. */
+  disconnect: (endpointId?: string | null) => Promise<boolean>;
   stopAll: () => Promise<boolean>;
+  setBlockedDeviceIds: (deviceIds: string[]) => Promise<boolean>;
 };
 
 const native = NativeModules.NearbyConnections as NativeNearby | undefined;
@@ -88,6 +91,17 @@ function bind(handlers: Partial<TransportHandlers>): () => void {
       },
     ),
     DeviceEventEmitter.addListener(
+      "NearbyConnectionRejected",
+      (e: { endpointId?: string; endpointName?: string }) => {
+        if (e.endpointId) {
+          handlers.onConnectionRejected?.({
+            endpointId: e.endpointId,
+            name: e.endpointName ?? e.endpointId,
+          });
+        }
+      },
+    ),
+    DeviceEventEmitter.addListener(
       "NearbyDisconnected",
       (e: { endpointId?: string }) => {
         handlers.onDisconnected?.(e.endpointId ?? "");
@@ -128,19 +142,20 @@ export function createNearbyTransport(): LocalTransport {
       await requireNative().requestConnection(endpointId);
     },
 
-    async send(_endpointId: string, raw: string) {
-      // The current native module tracks a single connection, so the target
-      // endpointId is implicit. When the Kotlin gains a peer map (mesh prep),
-      // forward `_endpointId` here — nothing above this line changes.
-      await requireNative().sendMessage(raw);
+    async send(endpointId: string, raw: string) {
+      await requireNative().sendMessage(endpointId, raw);
     },
 
-    async disconnect() {
-      await requireNative().disconnect();
+    async disconnect(endpointId?: string) {
+      await requireNative().disconnect(endpointId ?? null);
     },
 
     async stopAll() {
       await requireNative().stopAll();
+    },
+
+    async setBlockedDeviceIds(deviceIds: string[]) {
+      await requireNative().setBlockedDeviceIds(deviceIds);
     },
 
     subscribe(handlers) {

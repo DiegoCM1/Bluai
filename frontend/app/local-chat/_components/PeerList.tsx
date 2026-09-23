@@ -1,18 +1,20 @@
 import { MaterialCommunityIcons } from "@expo/vector-icons";
-import { Pressable, Text, View } from "react-native";
+import { Alert, Pressable, Text, View } from "react-native";
 
 import { colors } from "../../../utils/theme";
 import type { DiscoveredPeer } from "../_types";
 
-/** In-range devices. Tapping one opens the conversation (and connects). */
+/** In-range devices. Tapping one opens the conversation (and connects). Long-press to block. */
 export function PeerList({
   peers,
-  connectedPeerId,
+  connectedPeerIds,
   onOpen,
+  onBlock,
 }: {
   peers: DiscoveredPeer[];
-  connectedPeerId?: string | null;
+  connectedPeerIds: Set<string>;
   onOpen: (peer: DiscoveredPeer) => void;
+  onBlock?: (peer: DiscoveredPeer) => void;
 }) {
   return (
     <View className="gap-2">
@@ -25,11 +27,28 @@ export function PeerList({
         </Text>
       ) : (
         peers.map((peer) => {
-          const isConnected = peer.deviceId === connectedPeerId;
+          const isConnected = connectedPeerIds.has(peer.deviceId);
           return (
             <Pressable
               key={peer.deviceId}
               onPress={() => onOpen(peer)}
+              onLongPress={
+                onBlock
+                  ? () =>
+                      Alert.alert(
+                        "Bloquear a " + peer.nickname,
+                        "No podrás recibir mensajes de este dispositivo. Puedes desbloquearlo después.",
+                        [
+                          { text: "Cancelar", style: "cancel" },
+                          {
+                            text: "Bloquear",
+                            style: "destructive",
+                            onPress: () => onBlock(peer),
+                          },
+                        ],
+                      )
+                  : undefined
+              }
               android_ripple={{ color: "rgba(255,255,255,0.12)" }}
               className="flex-row items-center justify-between overflow-hidden rounded-2xl border border-white/10 bg-brand-surface px-4 py-3.5 active:opacity-70"
             >

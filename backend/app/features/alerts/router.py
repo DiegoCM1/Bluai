@@ -32,15 +32,7 @@ from app.features.alerts.providers.smn import fetch_latest_bulletin
 from app.features.users.service import get_user_by_firebase_uid
 from app.core.auth import get_current_user
 from app.middleware.api_key_auth import verify_api_key
-
-_SIAT_COLORS = {1: "AZUL", 2: "VERDE", 3: "AMARILLO", 4: "NARANJA", 5: "ROJO"}
-_SIAT_TITLES = {
-    1: "Aviso preventivo SIAT-CT Azul",
-    2: "Alerta SIAT-CT Verde — Preparación",
-    3: "Alerta SIAT-CT Amarillo — Alerta",
-    4: "Alerta SIAT-CT Naranja — Peligro alto",
-    5: "Alerta SIAT-CT Rojo — Impacto inminente",
-}
+from app.features.siat.levels import siat_color, siat_title
 
 
 router = APIRouter()
@@ -90,7 +82,7 @@ async def get_active_alerts(
             color = siat_state["siat_color"]
             # Use the real assessment reason (cyclone name, distance, ETA)
             # if available; fall back to generic title otherwise
-            assessment_reason = siat_state.get("reason") or _SIAT_TITLES.get(level, f"Nivel SIAT {level}")
+            assessment_reason = siat_state.get("reason") or siat_title(level)
             user_siat = SiatUserState(
                 level=level,
                 color=color,
@@ -103,7 +95,7 @@ async def get_active_alerts(
                     type="cyclonic",
                     level=level,
                     color=color,
-                    title=_SIAT_TITLES[level],
+                    title=siat_title(level),
                     short=assessment_reason,
                 ))
 
@@ -115,9 +107,11 @@ async def get_active_alerts(
             source="SYSTEM",
             type="system",
             level=a["level"],
-            color=_SIAT_COLORS.get(a["level"]),
+            color=siat_color(a["level"]),
             title=a["title"],
-            short=a["short"],
+            # ai_summary is the plain-language rewrite (SMN bulletins only) —
+            # falls back to the raw `short` for every other alert source.
+            short=a["ai_summary"] or a["short"],
         )
         for a in raw_alerts
     ]

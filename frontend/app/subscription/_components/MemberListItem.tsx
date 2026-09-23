@@ -1,11 +1,13 @@
-import { View, Text } from 'react-native';
+import { TouchableOpacity, View, Text } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { FamilyMember } from '../_types';
 
 interface MemberListItemProps {
   member: FamilyMember;
+  onRemove?: (member: FamilyMember) => void;
 }
 
-export default function MemberListItem({ member }: MemberListItemProps) {
+export default function MemberListItem({ member, onRemove }: MemberListItemProps) {
   const distanceText =
     member.distanceUnit === 'km'
       ? `${member.distance} km`
@@ -30,6 +32,16 @@ export default function MemberListItem({ member }: MemberListItemProps) {
       <Text className="text-base text-phase2SecondaryTxt">
         {distanceText}
       </Text>
+
+      {onRemove ? (
+        <TouchableOpacity
+          onPress={() => onRemove(member)}
+          className="ml-4 h-10 w-10 items-center justify-center rounded-full bg-red-50"
+          activeOpacity={0.8}
+        >
+          <Ionicons name="trash-outline" size={18} color="#DC2626" />
+        </TouchableOpacity>
+      ) : null}
     </View>
   );
 }

@@ -7,6 +7,9 @@ export interface Alert {
   level: number;
   title: string;
   short?: string;
+  // Plain-language rewrite (SMN bulletins only) — prefer this over `short`
+  // when present; null/absent for every other alert source.
+  ai_summary?: string | null;
   timestamp: string;
   score?: number;
   recommendations?: string[];

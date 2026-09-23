@@ -97,10 +97,13 @@ function CustomTabBar({ state, navigation }: BottomTabBarProps) {
           height: 52,
         }}
       >
-        {TABS.map((tab) => (
+        {TABS.map((tab, index) => (
           <Pressable
             key={tab.name}
             onPress={() => navigation.navigate(tab.name)}
+            accessibilityRole="tab"
+            accessibilityLabel={tab.label}
+            accessibilityState={{ selected: state.index === index }}
             style={{
               flex: 1,
               alignItems: "center",

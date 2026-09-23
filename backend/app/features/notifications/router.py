@@ -1,3 +1,5 @@
+import re
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
@@ -12,6 +14,40 @@ from app.core.config import settings
 from app.features.users.service import get_user_by_firebase_uid
 
 router = APIRouter()
+
+_PHONE_DIGITS_RE = re.compile(r"\D+")
+
+
+def _parse_admin_list(raw: str) -> list[str]:
+    return [v.strip().lower() for v in raw.split(",") if v.strip()]
+
+
+async def require_dev_tools_admin(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """
+    Shared allowlist gate for internal dev/staging tools — test notifications
+    and the SIAT cyclone/SMN injection endpoints in siat/router.py. A user
+    matches by Firebase email OR by the phone saved on their own profile
+    (`users.phone`). The phone check needs a DB lookup rather than the token
+    itself: sign-in here is Google/Apple only, so a Firebase ID token never
+    carries a phone_number claim.
+    """
+    admin_emails = _parse_admin_list(settings.NOTIFICATION_TEST_ADMIN_EMAILS)
+    user_email = (current_user.get("email") or "").lower()
+    if admin_emails and user_email in admin_emails:
+        return
+
+    admin_phones = _parse_admin_list(settings.NOTIFICATION_TEST_ADMIN_PHONES)
+    if admin_phones:
+        db_user = await get_user_by_firebase_uid(db, current_user.get("uid"))
+        user_phone_digits = _PHONE_DIGITS_RE.sub("", (db_user or {}).get("phone") or "")
+        admin_phone_digits = {_PHONE_DIGITS_RE.sub("", p) for p in admin_phones}
+        if user_phone_digits and user_phone_digits in admin_phone_digits:
+            return
+
+    raise HTTPException(status_code=403, detail="Not authorized to use dev tools.")
 
 _TEST_PAYLOADS: dict[str, dict] = {
     "hurricane_l2": {
@@ -99,20 +135,9 @@ async def send_test_notification(
     body: NotificationTestRequest,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
+    _admin: None = Depends(require_dev_tools_admin),
 ):
-    """Send a test notification to all devices. Requires Firebase auth + admin email allowlist."""
-    if not settings.DEV_BYPASS_NOTIF_TEST_AUTH:
-        admin_emails = [
-            e.strip().lower()
-            for e in settings.NOTIFICATION_TEST_ADMIN_EMAILS.split(",")
-            if e.strip()
-        ]
-        if not admin_emails:
-            raise HTTPException(status_code=403, detail="Test notifications not configured.")
-        user_email = (current_user.get("email") or "").lower()
-        if user_email not in admin_emails:
-            raise HTTPException(status_code=403, detail="Not authorized to send test notifications.")
-
+    """Send a test notification to all devices. Requires Firebase auth + dev-tools allowlist."""
     payload = _TEST_PAYLOADS[body.type]
     try:
         if body.only_me:

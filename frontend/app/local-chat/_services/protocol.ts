@@ -1,5 +1,3 @@
-import { randomUUID } from "expo-crypto";
-
 /**
  * Wire format for a single message. Designed for mesh from day one:
  * - 1-to-1 sets `to` = the peer and `ttl` = 1.
@@ -30,8 +28,20 @@ export interface Envelope {
 
 export const BROADCAST = "*";
 
+/**
+ * Envelope ids are for dedup, not secrets — no need for a CSPRNG. Dependency-
+ * free on purpose: `expo-crypto` requires its native module (unavailable
+ * outside the RN app, e.g. the mesh router's in-memory test harness run
+ * under plain Node via `tsx` — see meshRouter.harness.ts), and pulling it in
+ * dragged react-native's Flow-syntax entry file into a plain esbuild
+ * transform, which can't parse it.
+ */
 export function newId(): string {
-  return randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 export function makeEnvelope(params: {

@@ -2,33 +2,16 @@ import { View, Text, Pressable } from "react-native";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import dayjs from "../../../utils/date";
 import { track } from "../../../utils/analytics";
-import { colors } from '../../../utils/theme';
+import { colorForLevel, labelForLevel } from "../../../utils/siatLevels";
 
-
-// TODO: replace with backend field once AlertDetail exposes SIAT label
-export const labelForLevel = (l: number): string =>
-  ({
-    1: 'Aviso',
-    2: 'Prevención',
-    3: 'Preparación',
-    4: 'Alarma',
-    5: 'Afectación',
-  })[l] || 'Desconocido';
-
-export const colorForLevel = (l: number): string =>
-  ({
-    1: colors.brandTeal,
-    2: colors.brandGreen,
-    3: colors.brandYellow,
-    4: colors.brandOrange,
-    5: colors.brandRed,
-  })[l] || "#6B7280";
+export { colorForLevel, labelForLevel };
 
 interface Alert {
   id: string | number;
   level: number;
   title: string;
   short?: string;
+  ai_summary?: string | null;
   timestamp: string;
   score?: number;
 }
@@ -39,7 +22,8 @@ interface AlertCardProps {
 }
 
 export default function AlertCard({ alert, onPress }: AlertCardProps) {
-  const { level, title, short: description, timestamp } = alert;
+  const { level, title, short, ai_summary, timestamp } = alert;
+  const description = ai_summary || short;
 
   const bannerColor = `${colorForLevel(level)}50`;
   const iconColor = colorForLevel(level);

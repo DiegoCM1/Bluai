@@ -21,6 +21,7 @@ export function createNearbyTransport(): LocalTransport {
     async send() {},
     async disconnect() {},
     async stopAll() {},
+    async setBlockedDeviceIds() {},
     subscribe() {
       return () => {};
     },

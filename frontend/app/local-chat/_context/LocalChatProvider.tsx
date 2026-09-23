@@ -23,7 +23,8 @@ import { PermissionsAndroid, Platform } from "react-native";
 import type { Permission } from "react-native";
 
 import type { Conversation, DiscoveredPeer, LocalMessage } from "../_types";
-import { decode, encode, makeEnvelope, newId } from "../_services/protocol";
+import { BROADCAST, decode, encode, makeEnvelope, newId } from "../_services/protocol";
+import { createMeshRouter, type MeshRouter } from "../_services/meshRouter";
 import { getTransport } from "../_services/transport";
 import {
   decodeIdentity,
@@ -31,12 +32,21 @@ import {
   newDeviceId,
 } from "../_services/identity";
 import {
+  loadBlockedDeviceIds,
   loadConversations,
   loadNickname,
   loadOrCreateDeviceId,
+  saveBlockedDeviceIds,
   saveConversations,
   saveNickname,
 } from "../_services/storage";
+
+/** A mesh-room participant, for the roster UI (direct link vs. reachable by hop). */
+export interface MeshRosterEntry {
+  deviceId: string;
+  nickname: string;
+  viaHop: boolean;
+}
 
 /** BLE/emergency constraint: short messages only (MTU + readability). */
 export const MAX_MESSAGE_LENGTH = 200;
@@ -83,18 +93,32 @@ interface LocalChatValue {
 
   // lobby
   peers: DiscoveredPeer[];
+  /** Every peer with a live connection right now (P2P_CLUSTER: can be more than one). */
+  connectedPeers: DiscoveredPeer[];
+  /** @deprecated kept for simple "am I connected to anyone" call sites — prefer isPeerConnected. */
   connectedPeerId: string | null;
   isPeerInRange: (peerId: string) => boolean;
+  isPeerConnected: (peerId: string) => boolean;
   conversations: Conversation[];
   getConversation: (peerId: string) => Conversation | undefined;
   clearConversation: (peerId: string) => void;
+
+  // mesh broadcast room
+  meshMessages: LocalMessage[];
+  meshRoster: MeshRosterEntry[];
+  sendMeshMessage: (body: string) => void;
+
+  // blocking — by deviceId, not nickname (see storage.ts)
+  blockedDeviceIds: string[];
+  blockPeer: (deviceId: string) => Promise<void>;
+  unblockPeer: (deviceId: string) => Promise<void>;
 
   // actions
   toggleAdvertise: () => Promise<void>;
   toggleDiscover: () => Promise<void>;
   resetSession: () => Promise<void>;
   connectToPeer: (endpointId: string) => Promise<void>;
-  disconnect: () => Promise<void>;
+  disconnect: (peerId?: string) => Promise<void>;
   sendMessage: (peerId: string, body: string) => Promise<void>;
 }
 
@@ -119,7 +143,12 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
   const [discovering, setDiscovering] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [peers, setPeers] = useState<DiscoveredPeer[]>([]);
-  const [connected, setConnected] = useState<DiscoveredPeer | null>(null);
+  // P2P_CLUSTER holds several simultaneous connections — this replaced a
+  // single `connected: DiscoveredPeer | null` slot, which under cluster
+  // mode would just silently drop everyone but the most recent peer.
+  const [connectedPeers, setConnectedPeers] = useState<DiscoveredPeer[]>([]);
+  const [meshMessages, setMeshMessages] = useState<LocalMessage[]>([]);
+  const [blockedDeviceIds, setBlockedDeviceIds] = useState<string[]>([]);
   const [logs, setLogs] = useState<string[]>([
     supported ? "Listo para Android." : "No disponible en esta plataforma.",
   ]);
@@ -134,10 +163,11 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
   // Refs mirror state so the transport event handlers (bound once) can resolve
   // a live endpointId → stable deviceId without capturing stale closures.
   const peersRef = useRef<DiscoveredPeer[]>([]);
-  const connectedRef = useRef<DiscoveredPeer | null>(null);
+  const connectedPeersRef = useRef<DiscoveredPeer[]>([]);
   const conversationsRef = useRef<Record<string, Conversation>>({});
+  const meshRouterRef = useRef<MeshRouter | null>(null);
   peersRef.current = peers;
-  connectedRef.current = connected;
+  connectedPeersRef.current = connectedPeers;
   conversationsRef.current = conversations;
 
   const addLog = useCallback(
@@ -157,15 +187,17 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        const [id, nick, convos] = await Promise.all([
+        const [id, nick, convos, blocked] = await Promise.all([
           loadOrCreateDeviceId(newDeviceId),
           loadNickname(),
           loadConversations(),
+          loadBlockedDeviceIds(),
         ]);
         if (cancelled) return;
         setDeviceId(id);
         setNicknameState(nick ?? "");
         setConversations(convos);
+        setBlockedDeviceIds(blocked);
       } catch (e: any) {
         if (!cancelled)
           reportError(`No se pudo cargar el historial: ${e?.message ?? e}`);
@@ -240,8 +272,8 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
       setPeers((c) =>
         c.map((p) => (p.deviceId === peerDeviceId ? { ...p, nickname } : p)),
       );
-      setConnected((c) =>
-        c?.deviceId === peerDeviceId ? { ...c, nickname } : c,
+      setConnectedPeers((c) =>
+        c.map((p) => (p.deviceId === peerDeviceId ? { ...p, nickname } : p)),
       );
       setConversations((prev) => {
         const convo = prev[peerDeviceId];
@@ -259,9 +291,77 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     [],
   );
 
+  const upsertMeshMessage = useCallback((message: LocalMessage) => {
+    // Bounded like `logs` — a broadcast room in a long emergency session
+    // shouldn't grow without limit.
+    setMeshMessages((prev) => [message, ...prev].slice(0, 200));
+  }, []);
+
   // --- transport subscription ------------------------------------------------
+  // Gated on `deviceId` too: the mesh router needs a stable identity to
+  // decide "is this envelope for me" — and in practice nothing can connect
+  // before hydration finishes anyway (advertising/discovering require a
+  // saved nickname, which only exists post-hydration), so this doesn't
+  // change real behavior, just makes the dependency explicit.
   useEffect(() => {
-    if (!available) return;
+    if (!available || !deviceId) return;
+
+    const router = createMeshRouter(deviceId, {
+      sendToAllExcept: (raw, exceptEndpointId) => {
+        // A defined exceptEndpointId means this is a relay (see meshRouter's
+        // onPayload); undefined means it's our own fresh outgoing message.
+        if (exceptEndpointId) {
+          const env = decode(raw);
+          if (env) addLog(`↻ Reenviado id=${env.id.slice(0, 8)} ttl→${env.ttl}`);
+        }
+        for (const peer of connectedPeersRef.current) {
+          if (peer.endpointId === exceptEndpointId) continue;
+          transport
+            .send(peer.endpointId, raw)
+            .catch((e: any) =>
+              addLog(`⚠️ Reenvío a ${peer.nickname} falló: ${e?.message ?? e}`),
+            );
+        }
+      },
+      onDeliver: (env, fromEndpointId) => {
+        const link =
+          connectedPeersRef.current.find((p) => p.endpointId === fromEndpointId) ??
+          peersRef.current.find((p) => p.endpointId === fromEndpointId);
+        const peerId = link?.deviceId ?? env.from;
+
+        // Control message: a live rename — apply it, don't show a bubble.
+        if (env.kind === "identity") {
+          updatePeerNickname(peerId, env.body);
+          addLog(`Nombre actualizado: ${env.body}`);
+          return;
+        }
+
+        if (env.to === BROADCAST) {
+          const isDirect = connectedPeersRef.current.some(
+            (p) => p.deviceId === env.from,
+          );
+          upsertMeshMessage({
+            id: `remote-${env.id}`,
+            author: "remote",
+            body: env.body,
+            sentAt: new Date().toISOString(),
+            peerId: env.from,
+          });
+          addLog(`Mesh: mensaje de ${env.from}${isDirect ? "" : " (por salto)"}`);
+          return;
+        }
+
+        const peerNickname = link?.nickname ?? env.from;
+        upsertMessage(peerId, peerNickname, {
+          id: `remote-${env.id}`,
+          author: "remote",
+          body: env.body,
+          sentAt: new Date().toISOString(),
+          peerId,
+        });
+      },
+    });
+    meshRouterRef.current = router;
 
     const unsubscribe = transport.subscribe({
       onStateChange: (s) => {
@@ -295,6 +395,8 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
       },
       onConnectionInitiated: (peer) =>
         addLog(`Solicitud: ${decodeIdentity(peer.name).nickname}`),
+      onConnectionRejected: (peer) =>
+        addLog(`Bloqueado: ${decodeIdentity(peer.name).nickname} (deviceId bloqueado)`),
       onConnected: (peer) => {
         const id = decodeIdentity(peer.name);
         const link: DiscoveredPeer = {
@@ -302,12 +404,15 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
           deviceId: id.deviceId,
           nickname: id.nickname,
         };
-        setConnected(link);
+        setConnectedPeers((c) =>
+          c.some((p) => p.deviceId === link.deviceId)
+            ? c.map((p) => (p.deviceId === link.deviceId ? link : p))
+            : [...c, link],
+        );
         setConnecting(false);
-        // Native auto-stops both radios on connect (see onConnectionResult in
-        // the plugin) — reflect that truthfully so the toggles read OFF.
-        setAdvertising(false);
-        setDiscovering(false);
+        // P2P_CLUSTER keeps both radios running after connecting — mesh needs
+        // to keep gathering peers, not stop at one. Toggles stay whatever the
+        // user last set them to; we don't flip them here anymore.
         setError(null);
         // Touch the conversation so it appears in "previas" even before any
         // message, and its nickname stays current.
@@ -330,48 +435,24 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
         reportError("No se pudo completar la conexión.");
       },
       onDisconnected: (endpointId) => {
-        setConnected((c) => (c?.endpointId === endpointId ? null : c));
+        setConnectedPeers((c) => c.filter((p) => p.endpointId !== endpointId));
         setConnecting(false);
-        // Radios were stopped on connect and we don't silently re-enable them,
-        // so leaving both OFF here is the truthful state.
-        addLog("La conexión se cerró.");
+        addLog("Una conexión se cerró.");
       },
       onPayload: (endpointId, raw) => {
-        const env = decode(raw);
-        if (!env) {
+        if (!decode(raw)) {
           addLog(
             `⚠️ Payload descartado: vacío o no decodificable (${raw.length} bytes)`,
           );
           return;
         }
-        // Resolve the stable deviceId: prefer the live connection, fall back to
-        // a known peer by endpointId, finally to the envelope's claimed sender.
-        const link =
-          connectedRef.current?.endpointId === endpointId
-            ? connectedRef.current
-            : peersRef.current.find((p) => p.endpointId === endpointId);
-        const peerId = link?.deviceId ?? env.from;
-
-        // Control message: a live rename — apply it, don't show a bubble.
-        if (env.kind === "identity") {
-          updatePeerNickname(peerId, env.body);
-          addLog(`Nombre actualizado: ${env.body}`);
-          return;
-        }
-
-        const peerNickname = link?.nickname ?? env.from;
-        upsertMessage(peerId, peerNickname, {
-          id: `remote-${env.id}`,
-          author: "remote",
-          body: env.body,
-          sentAt: new Date().toISOString(),
-          peerId,
-        });
+        router.onPayload(endpointId, raw);
       },
     });
 
     return () => {
       unsubscribe();
+      meshRouterRef.current = null;
       transport
         .stopAll()
         .catch((e) =>
@@ -380,11 +461,13 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     };
   }, [
     available,
+    deviceId,
     transport,
     addLog,
     reportError,
     upsertMessage,
     updatePeerNickname,
+    upsertMeshMessage,
   ]);
 
   // --- identity --------------------------------------------------------------
@@ -403,11 +486,10 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
       } catch (e: any) {
         reportError(`No se pudo guardar el nombre: ${e?.message ?? e}`);
       }
-      // Live-push the rename to a currently-connected peer so their view
+      // Live-push the rename to every currently-connected peer so their view
       // updates without waiting for a fresh discovery. New discoverers still
       // get the latest name via the broadcast on the next advertise.
-      const link = connectedRef.current;
-      if (link) {
+      for (const link of connectedPeersRef.current) {
         const env = makeEnvelope({
           from: deviceId,
           to: link.deviceId,
@@ -418,7 +500,7 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
           .send(link.endpointId, encode(env))
           .catch((e) =>
             addLog(
-              `No se pudo actualizar el nombre en vivo: ${e?.message ?? e}`,
+              `No se pudo actualizar el nombre en vivo con ${link.nickname}: ${e?.message ?? e}`,
             ),
           );
       }
@@ -504,18 +586,27 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     [transport, reportError],
   );
 
-  const disconnect = useCallback(async () => {
-    try {
-      await transport.disconnect();
-    } catch (e: any) {
-      reportError(`No se pudo desconectar: ${e?.message ?? e}`);
-    }
-    setConnected(null);
-  }, [transport, reportError]);
+  /** Omit peerId to disconnect everyone; pass one to drop just that peer. */
+  const disconnect = useCallback(
+    async (peerId?: string) => {
+      const endpointId = peerId
+        ? connectedPeersRef.current.find((p) => p.deviceId === peerId)?.endpointId
+        : undefined;
+      try {
+        await transport.disconnect(endpointId);
+      } catch (e: any) {
+        reportError(`No se pudo desconectar: ${e?.message ?? e}`);
+      }
+      setConnectedPeers((c) =>
+        peerId ? c.filter((p) => p.deviceId !== peerId) : [],
+      );
+    },
+    [transport, reportError],
+  );
 
   const resetSession = useCallback(async () => {
     setPeers([]);
-    setConnected(null);
+    setConnectedPeers([]);
     setAdvertising(false);
     setDiscovering(false);
     setConnecting(false);
@@ -534,8 +625,8 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
    */
   const transmit = useCallback(
     async (peerId: string, localId: string, body: string): Promise<boolean> => {
-      const link = connectedRef.current;
-      if (link?.deviceId !== peerId) return false; // not the live peer
+      const link = connectedPeersRef.current.find((p) => p.deviceId === peerId);
+      if (!link) return false; // not a live peer right now
       const envelope = makeEnvelope({ from: deviceId, to: peerId, body });
       patchMessageStatus(peerId, localId, "sending");
       try {
@@ -556,8 +647,8 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
       const text = body.trim().slice(0, MAX_MESSAGE_LENGTH);
       if (!text) return;
 
-      const link = connectedRef.current;
-      const live = link?.deviceId === peerId;
+      const link = connectedPeersRef.current.find((p) => p.deviceId === peerId);
+      const live = link !== undefined;
       const localId = `self-${newId()}`;
 
       // Optimistic insert. If the peer isn't the live connection, it queues
@@ -580,26 +671,97 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     [upsertMessage, transmit, addLog],
   );
 
-  // Drain the queue when a peer (re)connects: replay every still-queued
-  // self-message for that peer, oldest first. Without this, queued messages
-  // would sit forever — the "se enviará al reconectar" promise would be empty.
+  // Drain the queue when peers (re)connect: replay every still-queued
+  // self-message for each connected peer, oldest first. Without this, queued
+  // messages would sit forever — the "se enviará al reconectar" promise
+  // would be empty. Safe to re-run often: it only ever picks up messages
+  // still in "queued" status, so an already-flushed message is a no-op.
   useEffect(() => {
-    if (!connected) return;
-    const convo = conversationsRef.current[connected.deviceId];
-    if (!convo) return;
-    const queued = convo.messages
-      .filter((m) => m.author === "self" && m.status === "queued")
-      .reverse(); // store is newest-first → send oldest first
-    if (queued.length === 0) return;
-
-    const peerId = connected.deviceId;
+    if (connectedPeers.length === 0) return;
     (async () => {
-      addLog(`Reenviando ${queued.length} en cola a ${connected.nickname}`);
-      for (const m of queued) {
-        await transmit(peerId, m.id, m.body);
+      for (const peer of connectedPeers) {
+        const convo = conversationsRef.current[peer.deviceId];
+        if (!convo) continue;
+        const queued = convo.messages
+          .filter((m) => m.author === "self" && m.status === "queued")
+          .reverse(); // store is newest-first → send oldest first
+        if (queued.length === 0) continue;
+        addLog(`Reenviando ${queued.length} en cola a ${peer.nickname}`);
+        for (const m of queued) {
+          await transmit(peer.deviceId, m.id, m.body);
+        }
       }
     })();
-  }, [connected, transmit, addLog]);
+  }, [connectedPeers, transmit, addLog]);
+
+  // --- mesh broadcast room -----------------------------------------------------
+  const sendMeshMessage = useCallback(
+    (body: string) => {
+      const text = body.trim().slice(0, MAX_MESSAGE_LENGTH);
+      if (!text) return;
+      const router = meshRouterRef.current;
+      if (!router) {
+        addLog("⚠️ Mesh no disponible todavía (identidad sin cargar).");
+        return;
+      }
+      const env = router.send(text);
+      upsertMeshMessage({
+        id: `self-${env.id}`,
+        author: "self",
+        body: text,
+        sentAt: new Date().toISOString(),
+        status: "sent", // flooding is fire-and-forget — no per-recipient ack
+        peerId: deviceId,
+      });
+    },
+    [addLog, deviceId, upsertMeshMessage],
+  );
+
+  // --- blocking (by deviceId — see storage.ts) --------------------------------
+  // Synced down to native on every change: onConnectionInitiated rejects a
+  // blocked deviceId there, before ever accepting — no JS round trip needed.
+  useEffect(() => {
+    if (!available) return;
+    transport
+      .setBlockedDeviceIds(blockedDeviceIds)
+      .catch((e: any) =>
+        console.warn("[local-chat] setBlockedDeviceIds falló:", e),
+      );
+  }, [available, blockedDeviceIds, transport]);
+
+  const blockPeer = useCallback(
+    async (peerDeviceId: string) => {
+      setBlockedDeviceIds((prev) =>
+        prev.includes(peerDeviceId) ? prev : [...prev, peerDeviceId],
+      );
+      try {
+        await saveBlockedDeviceIds(
+          Array.from(new Set([...blockedDeviceIds, peerDeviceId])),
+        );
+      } catch (e: any) {
+        addLog(`⚠️ No se pudo guardar el bloqueo: ${e?.message ?? e}`);
+      }
+      // Blocking someone already connected ends that connection immediately.
+      const live = connectedPeersRef.current.find(
+        (p) => p.deviceId === peerDeviceId,
+      );
+      if (live) await disconnect(peerDeviceId);
+    },
+    [blockedDeviceIds, addLog, disconnect],
+  );
+
+  const unblockPeer = useCallback(
+    async (peerDeviceId: string) => {
+      const next = blockedDeviceIds.filter((id) => id !== peerDeviceId);
+      setBlockedDeviceIds(next);
+      try {
+        await saveBlockedDeviceIds(next);
+      } catch (e: any) {
+        addLog(`⚠️ No se pudo guardar el desbloqueo: ${e?.message ?? e}`);
+      }
+    },
+    [blockedDeviceIds, addLog],
+  );
 
   // --- selectors -------------------------------------------------------------
   const conversationList = useMemo(
@@ -614,6 +776,34 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     (peerId: string) => peers.some((p) => p.deviceId === peerId),
     [peers],
   );
+  const isPeerConnected = useCallback(
+    (peerId: string) => connectedPeers.some((p) => p.deviceId === peerId),
+    [connectedPeers],
+  );
+  // Direct link (live Nearby connection) vs. reachable only by hop (we've
+  // seen a mesh-room message whose original sender isn't a direct peer).
+  const meshRoster = useMemo<MeshRosterEntry[]>(() => {
+    const direct = connectedPeers.map((p) => ({
+      deviceId: p.deviceId,
+      nickname: p.nickname,
+      viaHop: false,
+    }));
+    const directIds = new Set(direct.map((p) => p.deviceId));
+    const hopOnly = new Map<string, string>();
+    for (const m of meshMessages) {
+      if (m.author === "remote" && m.peerId && !directIds.has(m.peerId)) {
+        hopOnly.set(m.peerId, m.peerId); // no nickname carried over hops — id is the best we have
+      }
+    }
+    return [
+      ...direct,
+      ...Array.from(hopOnly.entries()).map(([deviceIdKey, nickname]) => ({
+        deviceId: deviceIdKey,
+        nickname,
+        viaHop: true,
+      })),
+    ];
+  }, [connectedPeers, meshMessages]);
 
   const value: LocalChatValue = {
     supported,
@@ -629,11 +819,19 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     error,
     logs,
     peers,
-    connectedPeerId: connected?.deviceId ?? null,
+    connectedPeers,
+    connectedPeerId: connectedPeers[0]?.deviceId ?? null,
     isPeerInRange,
+    isPeerConnected,
     conversations: conversationList,
     getConversation,
     clearConversation,
+    meshMessages,
+    meshRoster,
+    sendMeshMessage,
+    blockedDeviceIds,
+    blockPeer,
+    unblockPeer,
     toggleAdvertise,
     toggleDiscover,
     resetSession,

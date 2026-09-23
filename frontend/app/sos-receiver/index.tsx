@@ -19,7 +19,7 @@ export default function SOSReceiverScreen() {
   const hasCoords = Number.isFinite(parsedLat) && Number.isFinite(parsedLon);
   const hasPhone  = !!senderPhone && senderPhone.trim().length > 0;
 
-  console.log('[QA_SOS_RECEIVER] render | sender:', senderName, '| hasCoords:', hasCoords, '| hasPhone:', hasPhone, '| lat:', lat, '| lon:', lon);
+  console.log('[QA_SOS_RECEIVER] render | hasCoords:', hasCoords, '| hasPhone:', hasPhone); // sender name/phone/GPS deliberately not logged — PII
 
   function handleCall() {
     const tel = `tel:${senderPhone!.replace(/\s/g, "")}`;
@@ -30,7 +30,7 @@ export default function SOSReceiverScreen() {
   }
 
   function handleViewOnMap() {
-    console.log('[QA_SOS_RECEIVER] ver en mapa → alertLat:', parsedLat, '| alertLon:', parsedLon);
+    console.log('[QA_SOS_RECEIVER] ver en mapa'); // GPS deliberately not logged — PII
     router.push({
       pathname: "/(tabs)/MapScreen",
       params: hasCoords

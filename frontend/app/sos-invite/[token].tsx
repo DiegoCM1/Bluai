@@ -8,6 +8,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { authFetch } from "../../utils/api";
 import { API_BASE_URL } from "../../utils/config";
 import { colors, fonts } from "../../utils/theme";
+import { redactToken } from "../../utils/pushTelemetry";
 
 type Stage = "loading" | "preview" | "accepting" | "rejecting" | "success" | "error";
 
@@ -27,7 +28,7 @@ export default function SosInviteScreen() {
   const [errorMsg, setErrorMsg] = useState("");
 
   useEffect(() => {
-    console.log('[QA_SOS_INVITE] screen mount | token:', token ?? 'MISSING');
+    console.log('[QA_SOS_INVITE] screen mount | tokenPrefix:', token ? redactToken(token) : 'MISSING');
     if (!token) {
       console.warn('[QA_SOS_INVITE] no token → error stage');
       setStage("error"); setErrorMsg("Enlace inválido."); return;
@@ -38,7 +39,7 @@ export default function SosInviteScreen() {
     // invite is lost the moment they navigate away to sign in.
     AsyncStorage.setItem(PENDING_SOS_INVITE_KEY, token).catch(() => {});
     const url = `${API_BASE_URL}/api/v1/sos-invitations/preview/${token}`;
-    console.log('[QA_SOS_INVITE] fetching preview | url:', url);
+    console.log('[QA_SOS_INVITE] fetching preview'); // full URL deliberately not logged — embeds the token
     fetch(url)
       .then(r => {
         console.log('[QA_SOS_INVITE] preview response | status:', r.status);
@@ -49,7 +50,7 @@ export default function SosInviteScreen() {
         return r.json();
       })
       .then((data: Preview) => {
-        console.log('[QA_SOS_INVITE] preview OK | inviter:', data.inviter_display_name, '| contact:', data.contact_name);
+        console.log('[QA_SOS_INVITE] preview OK'); // inviter/contact names deliberately not logged — PII
         setPreview(data); setStage("preview");
       })
       .catch((reason: string) => {
@@ -67,7 +68,7 @@ export default function SosInviteScreen() {
 
   async function handleReject() {
     if (!token) return;
-    console.log('[QA_SOS_INVITE] rejecting | token:', token);
+    console.log('[QA_SOS_INVITE] rejecting | tokenPrefix:', redactToken(token));
     setStage("rejecting");
     try {
       await authFetch(`${API_BASE_URL}/api/v1/sos-invitations/${token}/reject`, { method: "POST" });
@@ -82,7 +83,7 @@ export default function SosInviteScreen() {
 
   async function handleAccept() {
     if (!token) return;
-    console.log('[QA_SOS_INVITE] accepting | token:', token);
+    console.log('[QA_SOS_INVITE] accepting | tokenPrefix:', redactToken(token));
     setStage("accepting");
     try {
       const res = await authFetch(`${API_BASE_URL}/api/v1/sos-invitations/${token}/accept`, { method: "POST" });

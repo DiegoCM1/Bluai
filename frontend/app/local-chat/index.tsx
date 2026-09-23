@@ -1,10 +1,12 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
 import { router } from "expo-router";
 
 import ScreenHeader from "../../components/ScreenHeader";
+import { colors } from "../../utils/theme";
+import { BlockedList } from "./_components/BlockedList";
 import { ConnectionToggles } from "./_components/ConnectionToggles";
 import { ConversationList } from "./_components/ConversationList";
 import { NicknameModal } from "./_components/NicknameModal";
@@ -12,6 +14,8 @@ import { PeerList } from "./_components/PeerList";
 import { StatusHero } from "./_components/StatusHero";
 import { TechLog } from "./_components/TechLog";
 import { useLocalChatContext } from "./_context/LocalChatProvider";
+import { getSubscription } from "../subscription/_services/subscriptionService";
+import { canAccessFeature, getCurrentPlanSlug } from "../subscription/_utils/planAccess";
 
 function openChat(peerId: string, nickname: string) {
   router.push({ pathname: "/local-chat/chat", params: { peerId, nickname } });
@@ -20,13 +24,52 @@ function openChat(peerId: string, nickname: string) {
 export default function LocalChatLobbyScreen() {
   const chat = useLocalChatContext();
   const [editing, setEditing] = useState(false);
+  const [blockedByPlan, setBlockedByPlan] = useState(false);
+
+  useEffect(() => {
+    getSubscription()
+      .then((subscription) => {
+        const plan = getCurrentPlanSlug(subscription);
+        setBlockedByPlan(!canAccessFeature(plan, "bluetooth"));
+      })
+      .catch(() => setBlockedByPlan(true));
+  }, []);
 
   const connectedName =
-    chat.peers.find((p) => p.deviceId === chat.connectedPeerId)?.nickname ??
-    chat.conversations.find((c) => c.peerId === chat.connectedPeerId)
-      ?.peerNickname;
+    chat.connectedPeers.length === 1
+      ? chat.connectedPeers[0].nickname
+      : chat.connectedPeers.length > 1
+        ? `${chat.connectedPeers.length} personas`
+        : undefined;
 
   const inRangeIds = new Set(chat.peers.map((p) => p.deviceId));
+  const connectedPeerIds = new Set(chat.connectedPeers.map((p) => p.deviceId));
+
+  if (blockedByPlan) {
+    return (
+      <SafeAreaView className="flex-1 bg-transparent" edges={["top", "bottom"]}>
+        <ScreenHeader title="Chat offline" />
+        <View className="flex-1 px-4 py-6">
+          <View className="rounded-2xl border border-amber-400/25 bg-amber-500/10 p-5">
+            <Text className="font-poppins-semibold text-xl text-white">
+              Funcion bloqueada
+            </Text>
+            <Text className="mt-3 font-poppins text-sm text-white/80">
+              El acceso Bluetooth offline requiere un plan Safe o Guard.
+            </Text>
+            <Pressable
+              onPress={() => router.push("/subscription")}
+              className="mt-5 rounded-2xl bg-cyan-500 px-4 py-4 items-center active:opacity-80"
+            >
+              <Text className="font-poppins-semibold text-slate-950">
+                Ver suscripcion
+              </Text>
+            </Pressable>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView className="flex-1 bg-transparent" edges={["top", "bottom"]}>
@@ -104,7 +147,7 @@ export default function LocalChatLobbyScreen() {
                 chat.advertising ||
                 chat.discovering ||
                 chat.connecting ||
-                chat.connectedPeerId !== null
+                chat.connectedPeers.length > 0
               }
               disabled={!chat.available}
               onToggleAdvertise={chat.toggleAdvertise}
@@ -112,16 +155,44 @@ export default function LocalChatLobbyScreen() {
               onStop={chat.resetSession}
             />
 
+            {/* Mesh: una sala compartida, distinta de los hilos 1-a-1 de abajo. */}
+            <Pressable
+              onPress={() => router.push("/local-chat/mesh")}
+              android_ripple={{ color: "rgba(255,255,255,0.12)" }}
+              className="flex-row items-center justify-between overflow-hidden rounded-2xl border border-brand-cyan/30 bg-brand-cyan/10 px-4 py-3.5 active:opacity-70"
+            >
+              <View className="flex-row items-center gap-3">
+                <View className="h-9 w-9 items-center justify-center rounded-full bg-brand-cyan/20">
+                  <MaterialCommunityIcons name="lan" size={18} color={colors.brandCyan} />
+                </View>
+                <View>
+                  <Text className="font-poppins-semibold text-sm text-white">
+                    Sala mesh
+                  </Text>
+                  <Text className="font-poppins text-xs text-white/50">
+                    Un mensaje le llega a todos, directo o por salto
+                  </Text>
+                </View>
+              </View>
+              <MaterialCommunityIcons name="chevron-right" size={20} color="white" />
+            </Pressable>
+
             <PeerList
               peers={chat.peers}
-              connectedPeerId={chat.connectedPeerId}
+              connectedPeerIds={connectedPeerIds}
               onOpen={(peer) => openChat(peer.deviceId, peer.nickname)}
+              onBlock={(peer) => chat.blockPeer(peer.deviceId)}
             />
 
             <ConversationList
               conversations={chat.conversations}
               inRangeIds={inRangeIds}
               onOpen={openChat}
+            />
+
+            <BlockedList
+              blockedDeviceIds={chat.blockedDeviceIds}
+              onUnblock={chat.unblockPeer}
             />
 
             {/* Dev-only: hidden in release builds (preview/production). */}

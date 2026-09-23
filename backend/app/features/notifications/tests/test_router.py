@@ -92,7 +92,7 @@ def test_test_notif_not_configured():
                 headers=AUTH_HEADERS,
             )
     assert r.status_code == 403
-    assert "not configured" in r.json()["detail"].lower()
+    assert "not authorized" in r.json()["detail"].lower()
 
 
 def test_test_notif_user_not_admin():
@@ -124,6 +124,48 @@ def test_test_notif_admin_success():
                 )
     assert r.status_code == 200
     assert r.json()["success_count"] == 2
+
+
+def test_test_notif_admin_phone_match_success():
+    """Email not in allowlist, but profile phone matches NOTIFICATION_TEST_ADMIN_PHONES → 200.
+    Formatting differs on purpose (spaces/dashes/+52) to prove digits-only comparison."""
+    with patch.object(settings, "NOTIFICATION_TEST_ADMIN_EMAILS", ADMIN_EMAIL):
+        with patch.object(settings, "NOTIFICATION_TEST_ADMIN_PHONES", "+52 55-1234-5678"):
+            with _mock_auth_email(NON_ADMIN_EMAIL):
+                with patch(
+                    "app.features.notifications.router.get_user_by_firebase_uid",
+                    new_callable=AsyncMock,
+                    return_value={**FAKE_DB_USER, "phone": "525512345678"},
+                ):
+                    with patch(
+                        "app.features.notifications.router.send_all_notifications",
+                        new_callable=AsyncMock,
+                        return_value={"success_count": 1, "failure_count": 0},
+                    ):
+                        r = client.post(
+                            "/api/v1/notifications/test",
+                            json={"type": "generic"},
+                            headers=AUTH_HEADERS,
+                        )
+    assert r.status_code == 200
+
+
+def test_test_notif_phone_no_match_403():
+    """Phone allowlist configured, but neither email nor profile phone match → 403."""
+    with patch.object(settings, "NOTIFICATION_TEST_ADMIN_EMAILS", ADMIN_EMAIL):
+        with patch.object(settings, "NOTIFICATION_TEST_ADMIN_PHONES", "5215512345678"):
+            with _mock_auth_email(NON_ADMIN_EMAIL):
+                with patch(
+                    "app.features.notifications.router.get_user_by_firebase_uid",
+                    new_callable=AsyncMock,
+                    return_value={**FAKE_DB_USER, "phone": "5219876543210"},
+                ):
+                    r = client.post(
+                        "/api/v1/notifications/test",
+                        json={"type": "generic"},
+                        headers=AUTH_HEADERS,
+                    )
+    assert r.status_code == 403
 
 
 def test_test_notif_invalid_type():

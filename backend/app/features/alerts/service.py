@@ -7,7 +7,18 @@ logger = logging.getLogger(__name__)
 
 
 def _smn_headline_to_level(headline: str) -> int:
-    """Derive SIAT level (1-5) from SMN headline keywords."""
+    """
+    Derive a SIAT level (1-5) from SMN headline/synthesis keywords.
+
+    Deliberate decision, not an accident: this is a keyword heuristic over
+    Saffir-Simpson wording ("CATEGORÍA 4/5") and generic severity adjectives
+    ("SEVER", "GRAVE"), NOT the proximity+ETA math `siat/evaluator.py` uses for
+    cyclone escalations. It exists because SMN bulletins/advisories are free
+    text with no lat/lon/speed for this user to evaluate against — there is no
+    real SIAT level to compute, only a best-effort proxy so the bulletin can
+    still be shown with a color/severity that's roughly in the right ballpark.
+    Treat the result as informational, not as an official SIAT-CT level.
+    """
     hl = headline.upper()
     if any(k in hl for k in ("ROJO", "EXTREM", "EXCEPCIONAL", "CATEGORÍA 4", "CATEGORÍA 5")):
         return 5
@@ -18,11 +29,17 @@ def _smn_headline_to_level(headline: str) -> int:
     return 2  # VERDE — default para boletín informativo
 
 
-async def persist_smn_bulletin_if_new(db: AsyncSession, bulletin: dict) -> bool:
+async def persist_smn_bulletin_if_new(db: AsyncSession, bulletin: dict, summarizer=None) -> bool:
     """
     Insert an SMN bulletin into the alerts table if it hasn't been persisted yet.
     Returns True when a new row was inserted, False when it already existed.
     SMN alerts have no specific lat/lon (national scope).
+
+    `summarizer`, when given, is an async `str -> str | None` callable (see
+    `ai.service.generate_plain_summary`) invoked once, only on a genuine new
+    insert — not on every 30-min cycle the unchanged bulletin is re-fetched.
+    Injected rather than imported directly so this module never pulls in the
+    AI feature's heavy dependencies.
     """
     aviso_num = bulletin.get("aviso_num")
     if aviso_num:
@@ -55,16 +72,28 @@ async def persist_smn_bulletin_if_new(db: AsyncSession, bulletin: dict) -> bool:
     level = _smn_headline_to_level(bulletin.get("headline") or "")
     short = (bulletin.get("summary") or bulletin.get("headline") or "Boletín del SMN/CONAGUA")[:500]
 
+    ai_summary = None
+    if summarizer is not None:
+        full_text = bulletin.get("full_text") or bulletin.get("summary") or bulletin.get("headline")
+        if full_text:
+            try:
+                ai_summary = await summarizer(full_text)
+            except Exception as exc:
+                logger.warning("SMN ai_summary generation failed for '%s': %s", title, exc)
+
     pdf_url = bulletin.get("pdf_url")
     await db.execute(
         text("""
-            INSERT INTO alerts (level, score, title, short, lat, lon, factors, recommendations, pdf_url)
-            VALUES (:level, 0, :title, :short, NULL, NULL, '[]', '[]', :pdf_url)
+            INSERT INTO alerts (level, score, title, short, lat, lon, factors, recommendations, pdf_url, ai_summary)
+            VALUES (:level, 0, :title, :short, NULL, NULL, '[]', '[]', :pdf_url, :ai_summary)
         """),
-        {"level": level, "title": title, "short": short, "pdf_url": pdf_url},
+        {"level": level, "title": title, "short": short, "pdf_url": pdf_url, "ai_summary": ai_summary},
     )
     await db.commit()
-    logger.info("SMN bulletin persisted: level=%d title='%s'", level, title)
+    logger.info(
+        "SMN bulletin persisted: level=%d title='%s' has_ai_summary=%s",
+        level, title, ai_summary is not None,
+    )
     return True
 
 
@@ -151,7 +180,7 @@ async def persist_smn_cyclone_advisory_if_new(db: AsyncSession, advisory: dict) 
 
 
 async def get_alerts(db: AsyncSession, limit: int, offset: int):
-    result = await db.execute(text("""SELECT id, timestamp, level, score, title, short
+    result = await db.execute(text("""SELECT id, timestamp, level, score, title, short, ai_summary
        FROM alerts
       ORDER BY timestamp DESC
       LIMIT :limit OFFSET :offset"""),
@@ -168,7 +197,7 @@ async def get_general_alerts_for_active(db: AsyncSession, limit: int):
     """
     result = await db.execute(
         text("""
-            SELECT id, timestamp, level, score, title, short
+            SELECT id, timestamp, level, score, title, short, ai_summary
             FROM alerts
             WHERE cyclone_meta IS NULL
             ORDER BY timestamp DESC

@@ -72,32 +72,6 @@ export default function SOSContactsScreen() {
       .catch(() => setBlockedByPlan(true));
   }, []);
 
-  if (blockedByPlan) {
-    return (
-      <SafeAreaView className="flex-1 bg-transparent" edges={["top", "left", "right", "bottom"]}>
-        <ScreenHeader title="Contactos SOS" />
-        <View style={{ flex: 1, padding: 24, justifyContent: 'center' }}>
-          <View style={{ borderRadius: 20, padding: 20, backgroundColor: 'rgba(245,158,11,0.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)' }}>
-            <Text style={{ color: 'white', fontFamily: fonts.poppinsSemiBold, fontSize: 20, marginBottom: 10 }}>
-              Funcion bloqueada
-            </Text>
-            <Text style={{ color: 'rgba(255,255,255,0.82)', fontFamily: fonts.poppins, fontSize: 14, lineHeight: 20, marginBottom: 16 }}>
-              Los contactos SOS familiares requieren un plan Safe o Guard.
-            </Text>
-            <TouchableOpacity
-              onPress={() => router.push('/subscription')}
-              style={{ backgroundColor: colors.brandCyan, borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
-            >
-              <Text style={{ color: '#062032', fontFamily: fonts.poppinsSemiBold }}>
-                Ver suscripcion
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </SafeAreaView>
-    );
-  }
-
   // Silent push → instant refresh without waiting for 15s poll
   useEffect(() => {
     const sub = DeviceEventEmitter.addListener('contacts:refresh', () => {
@@ -178,6 +152,41 @@ export default function SOSContactsScreen() {
     });
     return () => sub.remove();
   }, []);
+
+  // Sits BELOW every hook on purpose. This return used to live directly after
+  // the subscription fetch, which broke the Rules of Hooks: the first render
+  // ran all seven hooks with `blockedByPlan` false, the fetch then flipped it
+  // true (on the default free plan, or via the fail-closed .catch on any
+  // backend hiccup), and the next render bailed after three — React throws
+  // "Rendered fewer hooks than expected" and the screen crashes instead of
+  // showing this paywall.
+  //
+  // Add new hooks ABOVE this line, never below it.
+  if (blockedByPlan) {
+    return (
+      <SafeAreaView className="flex-1 bg-transparent" edges={["top", "left", "right", "bottom"]}>
+        <ScreenHeader title="Contactos SOS" />
+        <View style={{ flex: 1, padding: 24, justifyContent: 'center' }}>
+          <View style={{ borderRadius: 20, padding: 20, backgroundColor: 'rgba(245,158,11,0.12)', borderWidth: 1, borderColor: 'rgba(245,158,11,0.25)' }}>
+            <Text style={{ color: 'white', fontFamily: fonts.poppinsSemiBold, fontSize: 20, marginBottom: 10 }}>
+              Funcion bloqueada
+            </Text>
+            <Text style={{ color: 'rgba(255,255,255,0.82)', fontFamily: fonts.poppins, fontSize: 14, lineHeight: 20, marginBottom: 16 }}>
+              Los contactos SOS familiares requieren un plan Safe o Guard.
+            </Text>
+            <TouchableOpacity
+              onPress={() => router.push('/subscription')}
+              style={{ backgroundColor: colors.brandCyan, borderRadius: 14, paddingVertical: 14, alignItems: 'center' }}
+            >
+              <Text style={{ color: '#062032', fontFamily: fonts.poppinsSemiBold }}>
+                Ver suscripcion
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   function openCreate() {
     console.log('[QA_SOS] modal open → CREATE');

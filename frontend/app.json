@@ -26,7 +26,7 @@
       "supportsTablet": false,
       "usesAppleSignIn": true,
       "bundleIdentifier": "com.bluai.app",
-      "buildNumber": "17",
+      "buildNumber": "18",
       "googleServicesFile": "./GoogleService-Info.plist",
       "infoPlist": {
         "UIBackgroundModes": [

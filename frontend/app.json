@@ -111,7 +111,8 @@
             ]
           }
         }
-      ]
+      ],
+      "expo-audio"
     ],
     "extra": {
       "router": {

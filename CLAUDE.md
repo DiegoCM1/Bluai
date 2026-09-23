@@ -66,6 +66,9 @@ Full env setup (staging vs local backend, LAN IP) is in `docs/STAGING.md`.
 ## Conventions
 
 - **Branching:** feature branches off `dev`, merged via PR. `main` and `dev` are protected — no direct pushes.
+- **Merging — the method depends on how long the source branch lives:**
+  - **Squash** a feature/hotfix branch. It gets deleted after the merge, so collapsing it loses nothing.
+  - **Merge commit** for `dev → main`. Never squash this one. A squash creates a commit whose only parent is `main`'s previous tip, so `dev`'s commits never become ancestors of `main` and git keeps believing `main` has never seen them. The *next* release then replays every already-merged change as a conflict, and a conflict resolved carelessly is how a fix gets silently dropped. `main` history still reads cleanly — `git log --first-parent main` shows one entry per release.
 - **PRs:** ≤ 400 lines. Larger features split into multiple PRs. Happy-path integration test + demoable on a physical device before merge.
 - **Backend secrets** (DATABASE_URL, Firebase private key, LLM + notif keys) live in `backend/.env` (gitignored; see `backend/.env.example` for the list). Never commit them.
 - **Frontend has no secrets.** `EXPO_PUBLIC_*` vars are public client config (embedded in the app bundle), set per build profile in `frontend/eas.json` (committed). Anything the client can read is public by definition — never put a real secret behind `EXPO_PUBLIC_`.

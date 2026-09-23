@@ -18,8 +18,8 @@ import { API_BASE_URL } from "../utils/config";
 import { colors, fonts } from "../utils/theme";
 import { PENDING_SOS_INVITE_KEY } from "./sos-invite/[token]";
 import { PENDING_SOS_CONTACT_ADDED_KEY } from "./_layout";
-import { getSubscription } from "./subscription/_services/subscriptionService";
-import { canAccessFeature, getCurrentPlanSlug } from "./subscription/_utils/planAccess";
+import { useCurrentPlan } from './subscription/_hooks/useCurrentPlan';
+import { canAccessFeature } from "./subscription/_utils/planAccess";
 
 interface SOSContact {
   id: number; user_id: number; name: string; phone: string;
@@ -59,18 +59,12 @@ export default function SOSContactsScreen() {
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [whoHasMe, setWhoHasMe]             = useState<WhoHasMeItem[]>([]);
   const [addingReciprocal, setAddingReciprocal] = useState<number | null>(null);
-  const [blockedByPlan, setBlockedByPlan] = useState(false);
+  const currentPlan = useCurrentPlan();
+  const blockedByPlan = !canAccessFeature(currentPlan, 'family_panic');
 
   const fetchAllRef = useRef<() => void>(() => {});
 
-  useEffect(() => {
-    getSubscription()
-      .then((subscription) => {
-        const plan = getCurrentPlanSlug(subscription);
-        setBlockedByPlan(!canAccessFeature(plan, 'family_panic'));
-      })
-      .catch(() => setBlockedByPlan(true));
-  }, []);
+
 
   if (blockedByPlan) {
     return (

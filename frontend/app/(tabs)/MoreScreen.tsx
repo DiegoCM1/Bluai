@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect } from "react";
 import { ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import OptionCard from "../../components/OptionCard";
@@ -9,8 +9,8 @@ import { moreTourSteps } from "../../features/tour/moreTourSteps";
 import { MORE_TOUR_ROUTES, TOUR_IDS } from "../../features/tour/constants";
 import { useTourGate } from "../../features/tour/useTourGate";
 import { tourWarn } from "../../features/tour/tourLog";
-import { getSubscription } from "../subscription/_services/subscriptionService";
-import { canAccessFeature, getCurrentPlanSlug, type PlanSlug } from "../subscription/_utils/planAccess";
+import { useCurrentPlan } from '../subscription/_hooks/useCurrentPlan';
+import { canAccessFeature } from "../subscription/_utils/planAccess";
 
 const IS_DEV_BUILD =
   (process.env.EXPO_PUBLIC_API_URL ?? "").includes("staging") ||
@@ -45,13 +45,9 @@ export default function MoreScreen() {
 }
 
 function MoreScreenContent() {
-  const [currentPlan, setCurrentPlan] = useState<PlanSlug>("free");
+  const currentPlan = useCurrentPlan();
 
-  useEffect(() => {
-    getSubscription()
-      .then((subscription) => setCurrentPlan(getCurrentPlanSlug(subscription)))
-      .catch(() => setCurrentPlan("free"));
-  }, []);
+
 
   const hasFamilyPanic = canAccessFeature(currentPlan, "family_panic");
   const hasBluetooth = canAccessFeature(currentPlan, "bluetooth");

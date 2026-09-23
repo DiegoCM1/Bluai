@@ -4,6 +4,7 @@ from typing import Optional
 from math import asin, cos, radians, sin, sqrt
 import logging
 import asyncio
+from .environment import stripe_setting
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -326,10 +327,10 @@ async def cancel_stripe_subscription(db: AsyncSession, user_id: int) -> dict:
     from app.core.config import settings
     import stripe  # type: ignore
 
-    if not settings.STRIPE_SECRET_KEY:
+    if not stripe_setting("SECRET_KEY"):
         raise RuntimeError("Stripe is not configured.")
 
-    stripe.api_key = settings.STRIPE_SECRET_KEY
+    stripe.api_key = stripe_setting("SECRET_KEY")
     try:
         await asyncio.to_thread(stripe.Subscription.modify, row.stripe_subscription_id, cancel_at_period_end=True)
     except stripe.StripeError:
@@ -372,7 +373,7 @@ async def _create_stripe_session(
     from app.core.config import settings
     import stripe  # type: ignore
 
-    stripe_key = getattr(settings, "STRIPE_SECRET_KEY", "")
+    stripe_key = stripe_setting("SECRET_KEY")
     if not stripe_key:
         return None
 
@@ -386,7 +387,7 @@ async def _create_stripe_session(
             ("guard", "annual"):  {"currency": "usd", "unit_amount": 9990, "recurring": {"interval": "year"},  "product_data": {"name": "Blu Guard — Anual"}},
         }
 
-        price_id = getattr(settings, f"STRIPE_PRICE_{plan_slug.upper()}_{billing_period.upper()}", "")
+        price_id = stripe_setting(f"PRICE_{plan_slug.upper()}_{billing_period.upper()}")
         if price_id:
             line_items = [{"price": price_id, "quantity": 1}]
         else:

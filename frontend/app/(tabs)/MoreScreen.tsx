@@ -11,6 +11,7 @@ import { useTourGate } from "../../features/tour/useTourGate";
 import { tourWarn } from "../../features/tour/tourLog";
 import { getSubscription } from "../subscription/_services/subscriptionService";
 import { canAccessFeature, getCurrentPlanSlug, type PlanSlug } from "../subscription/_utils/planAccess";
+import { LOCAL_CHAT_ENABLED, PAYMENTS_ENABLED } from "../../utils/platformFeatures";
 
 const IS_DEV_BUILD =
   (process.env.EXPO_PUBLIC_API_URL ?? "").includes("staging") ||
@@ -48,6 +49,9 @@ function MoreScreenContent() {
   const [currentPlan, setCurrentPlan] = useState<PlanSlug>("free");
 
   useEffect(() => {
+    // With no purchase surface the plan can't change what this menu renders,
+    // so skip the round trip rather than fetching a value we'd ignore.
+    if (!PAYMENTS_ENABLED) return;
     getSubscription()
       .then((subscription) => setCurrentPlan(getCurrentPlanSlug(subscription)))
       .catch(() => setCurrentPlan("free"));
@@ -58,21 +62,44 @@ function MoreScreenContent() {
 
   const items: MenuItem[] = [
     { label: "Mi Perfil", icon: "account-circle-outline", route: "/profile" },
-    {
-      label: "Chat offline",
-      icon: "access-point-network",
-      route: "/local-chat",
-      subtitle: hasBluetooth ? "Bluetooth disponible con tu plan actual" : "Requiere Safe o Guard",
-    },
+    ...(LOCAL_CHAT_ENABLED
+      ? [
+          {
+            label: "Chat offline",
+            icon: "access-point-network" as const,
+            route: "/local-chat",
+            subtitle: hasBluetooth
+              ? "Bluetooth disponible con tu plan actual"
+              : "Requiere Safe o Guard",
+          },
+        ]
+      : []),
     {
       label: "Contactos SOS",
       icon: "account-heart-outline",
       route: "/SOSContactsScreen",
-      subtitle: hasFamilyPanic ? "Disponible con tu plan actual" : "Requiere Safe o Guard",
+      // Plan wording only makes sense where a plan can be bought. With payments
+      // off every feature is unlocked, so a subtitle would advertise a tier
+      // this build doesn't sell.
+      ...(PAYMENTS_ENABLED
+        ? {
+            subtitle: hasFamilyPanic
+              ? "Disponible con tu plan actual"
+              : "Requiere Safe o Guard",
+          }
+        : {}),
     },
     { label: "Feedback", icon: "message-reply-outline", route: "/FeedbackScreen" },
     { label: "Ajustes", icon: "cog-outline", route: "/SettingsScreen" },
-    { label: "Suscripcion", icon: "account-group-outline", route: "/subscription" },
+    ...(PAYMENTS_ENABLED
+      ? [
+          {
+            label: "Suscripcion",
+            icon: "account-group-outline" as const,
+            route: "/subscription",
+          },
+        ]
+      : []),
     ...(IS_DEV_BUILD
       ? [
           {

@@ -1,4 +1,5 @@
 import { Subscription } from '../_types';
+import { PAYMENTS_ENABLED } from '../../../utils/platformFeatures';
 
 export type PlanSlug = 'free' | 'safe' | 'guard' | 'edu';
 
@@ -85,6 +86,12 @@ export function getCurrentPlanSlug(subscription: Subscription | null): PlanSlug 
 }
 
 export function canAccessFeature(planSlug: PlanSlug, feature: SubscriptionFeature): boolean {
+  // Where payments are disabled there is no purchase surface, so nothing may
+  // present itself as locked — an upgrade wall would point at a route the build
+  // no longer serves. Deliberately fails OPEN: every call site below fails
+  // CLOSED on a network error, which is only correct while a way to buy exists.
+  if (!PAYMENTS_ENABLED) return true;
+
   const definition = FEATURE_DEFINITIONS.find((item) => item.id === feature);
   if (!definition) return false;
 

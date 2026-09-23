@@ -129,7 +129,7 @@ export function useChat() {
                 llm.sendMessage(input)
                 // isLoading cleared by llm.isGenerating effect above
             } else {
-                console.log('[useChat] routing → online (Together AI)')
+                console.log('[useChat] routing → online (OpenRouter)')
                 setModelMode('online')
                 const historyForAPI = [...messages, userMessage]
                 abortControllerRef.current = new AbortController()

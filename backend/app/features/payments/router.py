@@ -35,6 +35,7 @@ from .service import (
 )
 
 from .web import router as web_router
+from .environment import stripe_setting, stripe_payload
 
 router = APIRouter(prefix="/api/v1/payments", tags=["payments"])
 router.include_router(web_router)
@@ -210,18 +211,20 @@ async def cancel_my_subscription(
 async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
     payload = await request.body()
     sig = request.headers.get("stripe-signature", "")
-    webhook_secret = getattr(settings, "STRIPE_WEBHOOK_SECRET", "")
+    webhook_secret = stripe_setting("WEBHOOK_SECRET")
 
     if not webhook_secret:
         raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET is not configured.")
 
     try:
         import stripe  # type: ignore
-        stripe.api_key = settings.STRIPE_SECRET_KEY
-        event = stripe.Webhook.construct_event(payload, sig, webhook_secret)
+        stripe.api_key = stripe_setting("SECRET_KEY")
+        event = stripe_payload(stripe.Webhook.construct_event(payload, sig, webhook_secret))
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+    if event.get("livemode") is not (settings.STRIPE_MODE == "live"):
+        raise HTTPException(status_code=400, detail="Stripe event mode does not match this environment.")
     event_id = str(event.get("id") or "")
     if not event_id:
         raise HTTPException(status_code=400, detail="Stripe event ID is missing.")
@@ -256,7 +259,7 @@ async def stripe_webhook(request: Request, db: AsyncSession = Depends(get_db)):
 
             stripe_subscription_id = session.get("subscription")
             if user_id and plan_slug and stripe_subscription_id:
-                stripe_subscription = await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id)
+                stripe_subscription = stripe_payload(await asyncio.to_thread(stripe.Subscription.retrieve, stripe_subscription_id))
                 period_end = stripe_period_end(stripe_subscription)
                 await upsert_subscription(
                     db, int(user_id), plan_slug, billing_period,

@@ -16,6 +16,7 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.features.users.service import get_user_by_firebase_uid
 from .service import get_subscription
+from .environment import stripe_setting, stripe_payload
 
 router = APIRouter(prefix="/web")
 
@@ -23,29 +24,38 @@ router = APIRouter(prefix="/web")
 def configuration():
     origin = urlsplit(settings.WEB_PAYMENTS_ORIGIN)
     if (not settings.WEB_PAYMENTS_ENABLED
-        or not settings.STRIPE_SECRET_KEY.startswith(("sk_live_", "rk_live_"))
-        or not settings.STRIPE_WEBHOOK_SECRET
+        or not stripe_setting("SECRET_KEY")
+        or not stripe_setting("WEBHOOK_SECRET")
         or origin.scheme != "https" or not origin.hostname
         or origin.username or origin.password or origin.query or origin.fragment
         or origin.path not in ("", "/")):
         raise HTTPException(503, "Los pagos todavía no están disponibles.")
+    return membership_origin()
+
+
+def membership_origin():
+    origin = urlsplit(settings.WEB_PAYMENTS_ORIGIN)
+    if origin.scheme != "https" or not origin.hostname or origin.username or origin.password or origin.query or origin.fragment or origin.path not in ("", "/"):
+        raise HTTPException(503, "El sitio de membresías no está configurado.")
+    if settings.STRIPE_MODE == "test" and origin.hostname in {"bluai.com.mx", "www.bluai.com.mx"}:
+        raise HTTPException(503, "Staging necesita el sitio web de dev, no el de producción.")
     return settings.WEB_PAYMENTS_ORIGIN.rstrip("/")
 
 
 async def stripe_call(function, *args, **kwargs):
     try:
-        return await asyncio.to_thread(function, *args, api_key=settings.STRIPE_SECRET_KEY, **kwargs)
+        return stripe_payload(await asyncio.to_thread(function, *args, api_key=stripe_setting("SECRET_KEY"), **kwargs))
     except stripe.StripeError:
         raise HTTPException(503, "No se pudo contactar al servicio de pagos. Intenta nuevamente.")
 
 
 async def live_price(plan, period):
-    price_id = getattr(settings, f"STRIPE_PRICE_{plan.upper()}_{period.upper()}")
+    price_id = stripe_setting(f"PRICE_{plan.upper()}_{period.upper()}")
     if not price_id:
         raise HTTPException(503, "Este precio todavía no está disponible.")
     price = await stripe_call(stripe.Price.retrieve, price_id)
     recurring = price.get("recurring") or {}
-    if (not price.get("livemode") or not price.get("active")
+    if (price.get("livemode") is not (settings.STRIPE_MODE == "live") or not price.get("active")
         or price.get("billing_scheme") != "per_unit"
         or not isinstance(price.get("unit_amount"), int) or price["unit_amount"] <= 0
         or recurring.get("interval") != {"monthly": "month", "annual": "year"}[period]
@@ -53,7 +63,13 @@ async def live_price(plan, period):
         or price.get("currency") not in {"usd", "mxn"}):
         raise HTTPException(503, "El precio requiere revisión antes de habilitar los pagos.")
     return {"plan_slug": plan, "billing_period": period, "price_id": price_id,
-            "amount": price["unit_amount"], "currency": price["currency"]}
+            "amount": price["unit_amount"], "currency": price["currency"], "mode": settings.STRIPE_MODE}
+
+
+@router.get("/config")
+async def website_config():
+    stripe_setting("SECRET_KEY")
+    return {"membership_url": membership_origin() + "/membresias", "mode": settings.STRIPE_MODE}
 
 
 @router.get("/plans")

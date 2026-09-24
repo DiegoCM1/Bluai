@@ -1,7 +1,7 @@
 import '../../global.css';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'expo-router';
-import { View, Text, ScrollView, ActivityIndicator, Alert, TouchableOpacity, Animated, Easing, Linking } from 'react-native';
+import { View, Text, ScrollView, ActivityIndicator, Alert, TouchableOpacity, Animated, Easing, Linking, AppState } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -10,9 +10,8 @@ import ScreenHeader from '../../components/ScreenHeader';
 import { colors } from '../../utils/theme';
 import PlanCard from './_components/PlanCard';
 import FeatureAccessCard from './_components/FeatureAccessCard';
-import StripePaymentSheet from './_components/StripePaymentSheet';
-import { cancelSubscription, getPlans, getSubscription, openCheckoutSession } from './_services/subscriptionService';
-import { BillingPeriod, PaymentProvider, Plan, Subscription } from './_types';
+import { cancelSubscription, getPlans, getSubscription, openMembershipWebsite } from './_services/subscriptionService';
+import { BillingPeriod, Plan, Subscription } from './_types';
 import { FEATURE_DEFINITIONS, canAccessFeature, getCurrentPlanSlug, getMemberLimit } from './_utils/planAccess';
 
 const FALLBACK_PLANS: Plan[] = [
@@ -97,12 +96,10 @@ export default function SubscriptionScreen() {
   const [subscription, setSubscription] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(true);
-  const [sheetLoading, setSheetLoading] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [billingPeriods, setBillingPeriods] = useState<Record<string, BillingPeriod>>(
     () => buildDefaultBillingPeriods(FALLBACK_PLANS),
   );
-  const [pendingPlan, setPendingPlan] = useState<Plan | null>(null);
 
   const orbFloat = useRef(new Animated.Value(0)).current;
   const chipPulse = useRef(new Animated.Value(0)).current;
@@ -119,7 +116,10 @@ export default function SubscriptionScreen() {
       }
     });
 
-    return () => subscriptionReturnListener.remove();
+    const foregroundListener = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void load();
+    });
+    return () => { subscriptionReturnListener.remove(); foregroundListener.remove(); };
   }, []);
 
   useEffect(() => {
@@ -224,27 +224,10 @@ export default function SubscriptionScreen() {
       return;
     }
 
-    setPendingPlan(plan);
-  };
-
-  const handleSelectPaymentProvider = async (provider: PaymentProvider) => {
-    if (!pendingPlan) return;
-
-    const period = billingPeriods[pendingPlan.slug] ?? 'monthly';
-    setSheetLoading(true);
-
     try {
-      await openCheckoutSession(pendingPlan.slug, period, provider);
-      setPendingPlan(null);
-      Alert.alert(
-        'Checkout abierto',
-        `${pendingPlan.name}: continúa el pago con Stripe en la ventana que se abrió.`,
-      );
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'No se pudo abrir el checkout.';
-      Alert.alert('Error', msg);
-    } finally {
-      setSheetLoading(false);
+      await openMembershipWebsite(plan.slug);
+    } catch (error) {
+      Alert.alert('No se pudo abrir la web', error instanceof Error ? error.message : 'Intenta nuevamente.');
     }
   };
 
@@ -542,51 +525,18 @@ export default function SubscriptionScreen() {
         </View>
 
         <View className="px-4 pb-10">
-          <LinearGradient
-            colors={['rgba(8,18,34,0.96)', 'rgba(14,37,56,0.90)']}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
-            style={{ borderRadius: 24, padding: 18, borderWidth: 1, borderColor: 'rgba(120,210,255,0.14)' }}
-          >
-            <Text className="text-white text-xl font-bold">Aclaraciones importantes</Text>
-            <Text className="text-white/70 text-sm mt-2" style={{ lineHeight: 20 }}>
-              Estas notas explican el estado actual del flujo de pago y lo que todavia depende de backend o configuracion.
-            </Text>
-
-            <View style={{ marginTop: 14, gap: 14 }}>
-              <View style={{ borderRadius: 16, padding: 14, backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                <Text className="text-cyan-300 text-xs tracking-widest">PROVEEDOR VISIBLE EN APP</Text>
-                <Text className="text-white/88 text-sm mt-2" style={{ lineHeight: 20 }}>
-                  La experiencia mostrada al usuario esta enfocada actualmente en Stripe. El checkout y la comunicacion de cobro se presentan alrededor de ese proveedor.
-                </Text>
-              </View>
-
-              <View style={{ borderRadius: 16, padding: 14, backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                <Text className="text-cyan-300 text-xs tracking-widest">CANCELACION</Text>
-                <Text className="text-white/88 text-sm mt-2" style={{ lineHeight: 20 }}>
-                  La app ya puede mostrar el plan e iniciar la compra, pero todavia no cuenta con un flujo funcional para cancelar la suscripcion directamente desde backend.
-                </Text>
-              </View>
-
-              <View style={{ borderRadius: 16, padding: 14, backgroundColor: 'rgba(255,255,255,0.05)' }}>
-                <Text className="text-cyan-300 text-xs tracking-widest">ENTORNO PRODUCTIVO</Text>
-                <Text className="text-white/88 text-sm mt-2" style={{ lineHeight: 20 }}>
-                  El funcionamiento final depende de credenciales de pago validas, tablas desplegadas y una configuracion consistente entre frontend, backend y proveedor de pago.
-                </Text>
-              </View>
-            </View>
-          </LinearGradient>
+          <Text className="text-white text-xl font-bold">Membresias en la web</Text>
+          <Text className="text-white/70 mt-2">
+            Para consultar precios y pagar, abre el sitio de Bluai. Inicia sesion con la misma cuenta que usas en la app.
+            Al volver, actualizaremos tu plan cuando el pago este confirmado.
+          </Text>
+          <TouchableOpacity onPress={() => { void openMembershipWebsite().catch(() => Alert.alert('No se pudo abrir la web', 'Intenta nuevamente.')); }} className="mt-4 rounded-xl bg-blue-600 p-4">
+            <Text className="text-white text-center font-bold">Ir al sitio de membresias</Text>
+          </TouchableOpacity>
         </View>
       </ScrollView>
 
-      <StripePaymentSheet
-        visible={pendingPlan !== null}
-        plan={pendingPlan}
-        billingPeriod={pendingPlan ? billingPeriods[pendingPlan.slug] ?? 'monthly' : 'monthly'}
-        loading={sheetLoading}
-        onSelect={handleSelectPaymentProvider}
-        onClose={() => !sheetLoading && setPendingPlan(null)}
-      />
+
     </SafeAreaView>
   );
 }

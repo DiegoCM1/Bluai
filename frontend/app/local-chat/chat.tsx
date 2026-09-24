@@ -18,8 +18,8 @@ import { router, useLocalSearchParams } from "expo-router";
 
 import ScreenHeader from "../../components/ScreenHeader";
 import { colors } from "../../utils/theme";
-import { getSubscription } from "../subscription/_services/subscriptionService";
-import { canAccessFeature, getCurrentPlanSlug } from "../subscription/_utils/planAccess";
+import { useCurrentPlan } from '../subscription/_hooks/useCurrentPlan';
+import { canAccessFeature } from "../subscription/_utils/planAccess";
 import {
   MAX_MESSAGE_LENGTH,
   useLocalChatContext,
@@ -69,7 +69,8 @@ function Bubble({ message }: { message: LocalMessage }) {
 export default function LocalChatConversationScreen() {
   const params = useLocalSearchParams<{ peerId?: string; nickname?: string }>();
   const peerId = params.peerId ?? "";
-  const [blockedByPlan, setBlockedByPlan] = useState(false);
+  const currentPlan = useCurrentPlan();
+  const blockedByPlan = !canAccessFeature(currentPlan, 'bluetooth');
 
   const {
     getConversation,
@@ -96,14 +97,7 @@ export default function LocalChatConversationScreen() {
     [convo?.messages],
   );
 
-  useEffect(() => {
-    getSubscription()
-      .then((subscription) => {
-        const plan = getCurrentPlanSlug(subscription);
-        setBlockedByPlan(!canAccessFeature(plan, "bluetooth"));
-      })
-      .catch(() => setBlockedByPlan(true));
-  }, []);
+
 
   // Auto-connect once when the peer is in range but not yet connected.
   const triedConnect = useRef(false);

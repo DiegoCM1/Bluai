@@ -12,6 +12,7 @@ test('focused screens refresh access on app resume and stop after leaving', asyn
   let removed = false;
   const updates = [];
   const mocks = {
+    '../../../utils/platformFeatures': { PAYMENTS_ENABLED: true },
     react: { useCallback: callback => callback, useState: initial => [initial, value => updates.push(value)] },
     'react-native': { AppState: { addEventListener: (_, callback) => {
       listener = callback;
@@ -36,5 +37,13 @@ test('focused screens refresh access on app resume and stop after leaving', asyn
   cleanup();
   await new Promise(setImmediate);
   assert.equal(removed, true);
+  assert.equal(updates.length, 2);
+  // Keep iOS builds with payments disabled free of subscription requests.
+  mocks['../../../utils/platformFeatures'].PAYMENTS_ENABLED = false;
+  listener = null;
+  context.exports.useCurrentPlan();
+  await new Promise(setImmediate);
+  assert.equal(listener, null);
+  assert.equal(cleanup, undefined);
   assert.equal(updates.length, 2);
 });

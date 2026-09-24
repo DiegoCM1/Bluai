@@ -223,6 +223,21 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
                 created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )
         """))
+        # `CREATE TABLE IF NOT EXISTS` protege la TABLA, no sus columnas: donde
+        # `sos_events` ya existía, Postgres se salta el statement completo y jamás
+        # compara el esquema. Prod creó esta tabla con una forma vieja (la de
+        # `future_integration/sos/service.py`, sin `notified_count`), así que el
+        # INSERT de `trigger_sos` llevaba meses tirando 500 —
+        # UndefinedColumnError— mientras staging, CI y cada local pasaban: ahí la
+        # base nace limpia y el CREATE sí corre.
+        #
+        # Por eso una columna nueva necesita SIEMPRE su ALTER además del CREATE.
+        # El CREATE describe bases nuevas; el ALTER, las que ya existen.
+        # `test_schema_completeness.py` no puede ver este hueco: corre contra una
+        # base limpia, donde el cuerpo del CREATE siempre produce la columna.
+        await conn.execute(text(
+            "ALTER TABLE sos_events ADD COLUMN IF NOT EXISTS notified_count INT NOT NULL DEFAULT 0"
+        ))
         await conn.execute(text(
             "CREATE INDEX IF NOT EXISTS sos_events_sender_idx ON sos_events (sender_id, created_at DESC)"
         ))

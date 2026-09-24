@@ -45,7 +45,9 @@ test('app rejects an unsafe membership URL', async () => {
 });
 
 test('only an active plan unlocks its corresponding entitlements', () => {
-  const { canAccessFeature, getCurrentPlanSlug } = load('app/subscription/_utils/planAccess.ts');
+  const { canAccessFeature, getCurrentPlanSlug } = load('app/subscription/_utils/planAccess.ts', {
+    '../../../utils/platformFeatures': { PAYMENTS_ENABLED: true },
+  });
   assert.equal(getCurrentPlanSlug({ planSlug: 'guard', status: 'inactive' }), 'free');
   assert.equal(canAccessFeature('free', 'family_management'), false);
   assert.equal(canAccessFeature('safe', 'family_management'), true);

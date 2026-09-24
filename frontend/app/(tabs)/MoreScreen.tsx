@@ -9,8 +9,10 @@ import { moreTourSteps } from "../../features/tour/moreTourSteps";
 import { MORE_TOUR_ROUTES, TOUR_IDS } from "../../features/tour/constants";
 import { useTourGate } from "../../features/tour/useTourGate";
 import { tourWarn } from "../../features/tour/tourLog";
+
 import { useCurrentPlan } from '../subscription/_hooks/useCurrentPlan';
 import { canAccessFeature } from "../subscription/_utils/planAccess";
+import { LOCAL_CHAT_ENABLED, PAYMENTS_ENABLED } from "../../utils/platformFeatures";
 
 const IS_DEV_BUILD =
   (process.env.EXPO_PUBLIC_API_URL ?? "").includes("staging") ||
@@ -49,26 +51,51 @@ function MoreScreenContent() {
 
 
 
+
+
   const hasFamilyPanic = canAccessFeature(currentPlan, "family_panic");
   const hasBluetooth = canAccessFeature(currentPlan, "bluetooth");
 
   const items: MenuItem[] = [
     { label: "Mi Perfil", icon: "account-circle-outline", route: "/profile" },
-    {
-      label: "Chat offline",
-      icon: "access-point-network",
-      route: "/local-chat",
-      subtitle: hasBluetooth ? "Bluetooth disponible con tu plan actual" : "Requiere Safe o Guard",
-    },
+    ...(LOCAL_CHAT_ENABLED
+      ? [
+          {
+            label: "Chat offline",
+            icon: "access-point-network" as const,
+            route: "/local-chat",
+            subtitle: hasBluetooth
+              ? "Bluetooth disponible con tu plan actual"
+              : "Requiere Safe o Guard",
+          },
+        ]
+      : []),
     {
       label: "Contactos SOS",
       icon: "account-heart-outline",
       route: "/SOSContactsScreen",
-      subtitle: hasFamilyPanic ? "Disponible con tu plan actual" : "Requiere Safe o Guard",
+      // Plan wording only makes sense where a plan can be bought. With payments
+      // off every feature is unlocked, so a subtitle would advertise a tier
+      // this build doesn't sell.
+      ...(PAYMENTS_ENABLED
+        ? {
+            subtitle: hasFamilyPanic
+              ? "Disponible con tu plan actual"
+              : "Requiere Safe o Guard",
+          }
+        : {}),
     },
     { label: "Feedback", icon: "message-reply-outline", route: "/FeedbackScreen" },
     { label: "Ajustes", icon: "cog-outline", route: "/SettingsScreen" },
-    { label: "Suscripcion", icon: "account-group-outline", route: "/subscription" },
+    ...(PAYMENTS_ENABLED
+      ? [
+          {
+            label: "Suscripcion",
+            icon: "account-group-outline" as const,
+            route: "/subscription",
+          },
+        ]
+      : []),
     ...(IS_DEV_BUILD
       ? [
           {

@@ -1,7 +1,14 @@
 import "../global.css";
 import { clearOnboardingData } from "./onboarding/_services/onboardingService";
 import { resetAllTours } from "../features/tour/tourService";
-import { Alert, Platform, Text, ScrollView, ActivityIndicator } from "react-native";
+import {
+  Alert,
+  Linking,
+  Platform,
+  Text,
+  ScrollView,
+  ActivityIndicator,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -10,6 +17,14 @@ import { MODEL_FAILURE_LABEL } from "./ai/_services/modelTelemetry";
 import { useAuth } from "../features/auth/AuthContext";
 import ScreenHeader from "../components/ScreenHeader";
 import OptionCard from "../components/OptionCard";
+
+/**
+ * Must stay identical to the Privacy Policy URL filed in App Store Connect.
+ * App Review opens both and compares them, and a link that 404s from inside the
+ * app is a metadata rejection — so if the marketing site ever moves this page,
+ * this constant moves with it.
+ */
+const PRIVACY_POLICY_URL = "https://www.bluai.com.mx/aviso-de-privacidad";
 
 export default function SettingsScreen() {
   const router = useRouter();
@@ -90,6 +105,20 @@ export default function SettingsScreen() {
       Alert.alert(
         "Error",
         "No se pudo reiniciar el tutorial. Intenta de nuevo.",
+      );
+    }
+  };
+
+  const handleOpenPrivacyPolicy = async () => {
+    try {
+      await Linking.openURL(PRIVACY_POLICY_URL);
+    } catch {
+      // openURL rejects when no handler can take the URL (no browser, or the
+      // scheme is blocked). Say where to find it rather than failing silently —
+      // a tap that does nothing reads as a broken app to a reviewer.
+      Alert.alert(
+        "No se pudo abrir el enlace",
+        "Consulta el aviso de privacidad en bluai.com.mx/aviso-de-privacidad",
       );
     }
   };
@@ -223,6 +252,13 @@ export default function SettingsScreen() {
           title="Como funciona Bluai"
           subtitle="Repite el tutorial de la app"
           onPress={handleReplayTutorial}
+        />
+
+        <OptionCard
+          icon="shield-lock-outline"
+          title="Aviso de privacidad"
+          subtitle="Cómo tratamos y protegemos tus datos"
+          onPress={handleOpenPrivacyPolicy}
         />
 
         <OptionCard

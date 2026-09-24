@@ -3,11 +3,13 @@ import { AppState } from 'react-native';
 import { useFocusEffect } from 'expo-router';
 import { getSubscription } from '../_services/subscriptionService';
 import { getCurrentPlanSlug, type PlanSlug } from '../_utils/planAccess';
+import { PAYMENTS_ENABLED } from '../../../utils/platformFeatures';
 
 /** Revalidate on navigation and on returning from a browser payment. */
 export function useCurrentPlan(): PlanSlug {
   const [plan, setPlan] = useState<PlanSlug>('free');
   useFocusEffect(useCallback(() => {
+    if (!PAYMENTS_ENABLED) return;
     let active = true;
     let sequence = 0;
     async function refresh() {

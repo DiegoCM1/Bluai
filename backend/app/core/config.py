@@ -28,6 +28,14 @@ class Settings(BaseSettings):
 
     # Payments — Stripe (optional; omit to disable checkout)
     STRIPE_SECRET_KEY: str = ""
+    STRIPE_MODE: str = "live"
+    RAILWAY_ENVIRONMENT_NAME: str = ""
+    STRIPE_TEST_SECRET_KEY: str = ""
+    STRIPE_TEST_WEBHOOK_SECRET: str = ""
+    STRIPE_TEST_PRICE_SAFE_MONTHLY: str = ""
+    STRIPE_TEST_PRICE_SAFE_ANNUAL: str = ""
+    STRIPE_TEST_PRICE_GUARD_MONTHLY: str = ""
+    STRIPE_TEST_PRICE_GUARD_ANNUAL: str = ""
     STRIPE_WEBHOOK_SECRET: str = ""
     STRIPE_PRICE_SAFE_MONTHLY: str = ""
     STRIPE_PRICE_SAFE_ANNUAL: str = ""

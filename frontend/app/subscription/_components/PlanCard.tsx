@@ -3,7 +3,6 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
 import { Plan, BillingPeriod } from '../_types';
-import BillingToggle from './BillingToggle';
 import FeatureList from './FeatureList';
 import { fonts } from '../../../utils/theme';
 
@@ -24,19 +23,13 @@ interface PlanCardProps {
 
 export default function PlanCard({
   plan,
-  billingPeriod,
   isCurrentPlan,
-  onBillingChange,
   onSubscribe,
 }: PlanCardProps) {
   const accent = PLAN_ACCENT[plan.slug] ?? PLAN_ACCENT.free;
   const canSubscribe = !plan.isFree && !isCurrentPlan;
-  const ctaLabel = isCurrentPlan ? 'Plan actual' : plan.isFree ? 'Plan incluido' : `Obtener ${plan.name}`;
-  const priceLabel = plan.isFree
-    ? 'Sin costo'
-    : billingPeriod === 'annual'
-      ? `$${(plan.annualPrice ?? 0).toFixed(2)} / año`
-      : `$${(plan.monthlyPrice ?? 0).toFixed(2)} / mes`;
+  const ctaLabel = isCurrentPlan ? 'Plan actual' : plan.isFree ? 'Plan incluido' : 'Ver en el sitio web';
+  const priceLabel = plan.isFree ? 'Sin costo' : 'Precios en la web';
 
   return (
     <View
@@ -101,11 +94,7 @@ export default function PlanCard({
           <Text style={styles.priceCaption}>Plan seleccionado</Text>
           <Text style={styles.priceValue}>{priceLabel}</Text>
           <Text style={styles.priceFoot}>
-            {plan.isFree
-              ? 'Acceso esencial para uso individual.'
-              : billingPeriod === 'annual'
-                ? 'Pago anual con mejor valor.'
-                : 'Pago mensual flexible.'}
+            {plan.isFree ? 'Acceso esencial para uso individual.' : 'Elige tu periodo y paga en el sitio de Bluai.'}
           </Text>
         </View>
 
@@ -113,15 +102,6 @@ export default function PlanCard({
 
         <FeatureList features={plan.features} title="INCLUYE:" />
 
-        {!plan.isFree ? (
-          <View style={styles.billingWrap}>
-            <BillingToggle
-              plan={plan}
-              billingPeriod={billingPeriod}
-              onBillingChange={onBillingChange}
-            />
-          </View>
-        ) : null}
 
         <TouchableOpacity
           onPress={canSubscribe ? onSubscribe : undefined}

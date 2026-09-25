@@ -38,3 +38,14 @@ export const PAYMENTS_ENABLED = Platform.OS !== "ios";
  * Restore when MultipeerConnectivity lands behind the same transport interface.
  */
 export const LOCAL_CHAT_ENABLED = Platform.OS !== "ios";
+
+/**
+ * Gates AdMob: consent, SDK initialization and the map banner. The Google
+ * Mobile Ads SDK is still linked into the iOS binary (autolinking includes it
+ * on both platforms), but nothing calls it there, so it never initializes,
+ * requests ads or collects data on iPhone.
+ *
+ * Restore when iOS ads are wanted: that also needs an iOS banner unit ID, a
+ * decision on ATT vs. non-personalized ads, and the App Store privacy label.
+ */
+export const ADS_ENABLED = Platform.OS === "android";

@@ -1,0 +1,58 @@
+BLUAI ADMIN DASHBOARD - GOALS
+
+A private website, only for the Bluai team, to see how the app is doing and
+manage user accounts without writing SQL.
+
+
+CHARTS AND STATISTICS
+- Summary cards at the top: total users, new users this week, paid users and
+  monthly revenue.
+- User growth: a line chart of total users over time (by day, week or month).
+- New sign-ups: a bar chart of new users per day, week or month.
+- Plans: a pie chart showing how many users are on each plan (free and each
+  paid plan), and how many pay monthly vs. yearly.
+- Revenue: money earned per month, split by plan.
+- Upgrades and cancellations: how many free users become paid each month, how
+  many cancel, and how many are about to lose access.
+- App activity: SOS alerts sent, map reports and feedback received over time.
+- Filters on every chart: date range, plan, and monthly vs. yearly.
+- Export any chart's data as a spreadsheet (CSV).
+
+
+FIND AND MANAGE USERS
+- Search a user by email.
+- User list with filters (plan, status, sign-up date), shown in pages.
+- User profile: plan, status, sign-up date, when their plan renews or ends,
+  and full payment history.
+- Manually upgrade or downgrade a user's plan. A reason is required.
+- Give a user a plan for a limited time (e.g. 30 days free) that ends on its
+  own.
+
+
+SAFETY
+- Only team members can access the dashboard. Everyone else is blocked.
+- Two access levels: "viewer" (can only see data) and "admin" (can also make
+  changes).
+- Every change to a user is recorded: who made it, when, what changed and why.
+- Manual plan changes never charge the user and never conflict with their real
+  payments.
+
+
+PERFORMANCE
+- The dashboard never slows down the app for real users.
+- Chart numbers refresh every few minutes, not live on every page load.
+- Exports only include the filtered data, not the whole database.
+
+
+PRIORITY
+1. User search, user profile and manual plan changes, with safety in place.
+2. Summary cards and main charts (growth, plans, revenue).
+3. Remaining charts, filters and export.
+
+
+DONE WHEN
+- A teammate can find any user by email/type of plan, see their plan and change it in
+  under a minute, and the change is recorded.
+- Anyone on the team can open the dashboard and see in a few seconds how many
+  users there are, whether that number is growing, how many pay and how much
+  money is coming in.

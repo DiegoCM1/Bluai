@@ -12,7 +12,7 @@
       "developmentClient": true
     },
      "production": {
-      "env": { "NPM_CONFIG_LEGACY_PEER_DEPS": "1", "EXPO_PUBLIC_API_URL": "https://backend-blueye-production.up.railway.app", "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "648833411163-mt0gsiiddg7b8614dnujpo6os88n60k2.apps.googleusercontent.com", "EXPO_PUBLIC_MIXPANEL_PROJECT_TOKEN": "0f9403626c6da58202dec0ea307ddda8", "EXPO_PUBLIC_SENTRY_DSN": "https://fa20c6d71374d1d976fdfea2a14b9e92@o4511345134403584.ingest.us.sentry.io/4511345137745920"},
+      "env": { "NPM_CONFIG_LEGACY_PEER_DEPS": "1", "EXPO_PUBLIC_API_URL": "https://backend-blueye-production.up.railway.app", "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "648833411163-mt0gsiiddg7b8614dnujpo6os88n60k2.apps.googleusercontent.com", "EXPO_PUBLIC_MIXPANEL_PROJECT_TOKEN": "0f9403626c6da58202dec0ea307ddda8", "EXPO_PUBLIC_SENTRY_DSN": "https://fa20c6d71374d1d976fdfea2a14b9e92@o4511345134403584.ingest.us.sentry.io/4511345137745920", "EXPO_PUBLIC_ADMOB_BANNER_ANDROID": "ca-app-pub-5470569198760571/4747032351"},
       "android": { "buildType": "app-bundle" }
     }
   },

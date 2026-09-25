@@ -3,6 +3,7 @@ import { Stack, useRouter, useSegments } from "expo-router";
 import { ModelProvider } from './ai/_context/ModelContext';
 import { AuthProvider, useAuth } from '../features/auth/AuthContext';
 import { NetworkProvider } from '../features/network/NetworkContext';
+import { initAds } from "../features/ads/adsService";
 // import { Drawer } from "expo-router/drawer";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { ThemeProvider } from "../context/ThemeContext";
@@ -432,6 +433,11 @@ export default Sentry.wrap(function Layout() {
         router.push({ pathname: "/alerts/[id]", params: { id } });
       }
     })();
+  }, []);
+
+  // AdMob: consent + SDK once per launch (Android only; no-op on iOS).
+  useEffect(() => {
+    void initAds();
   }, []);
 
   // Registra la pantalla actual en Mixpanel

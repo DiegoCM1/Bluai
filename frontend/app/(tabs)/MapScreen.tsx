@@ -2,7 +2,9 @@ import "../../global.css";
 import { useEffect, useState } from "react";
 import { StatusBar } from "expo-status-bar";
 import { useLocalSearchParams } from "expo-router";
+import { View } from "react-native";
 import Main from "../map";
+import { AdBanner } from "../../features/ads/AdBanner";
 
 type FocusParams = {
   alertLat?: string;
@@ -39,14 +41,20 @@ const MapScreen = () => {
   return (
     <>
       <StatusBar style="light" translucent={false} />
-      <Main
-        focusLat={focusLat}
-        focusLon={focusLon}
-        focusTitle={alertTitle}
-        focusLevel={alertLevel ? parseInt(alertLevel, 10) : undefined}
-        focusSosPhone={alertSosPhone}
-        onDismissFocus={() => setFocus({})}
-      />
+      {/* Column: the map takes the remaining height and the banner sits below
+          it, so the map's bottom-anchored controls move up with the banner
+          instead of being covered by it. */}
+      <View className="flex-1">
+        <Main
+          focusLat={focusLat}
+          focusLon={focusLon}
+          focusTitle={alertTitle}
+          focusLevel={alertLevel ? parseInt(alertLevel, 10) : undefined}
+          focusSosPhone={alertSosPhone}
+          onDismissFocus={() => setFocus({})}
+        />
+        <AdBanner />
+      </View>
     </>
   );
 };

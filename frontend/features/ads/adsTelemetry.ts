@@ -7,8 +7,8 @@ import { initAnalytics, track } from "../../utils/analytics";
  *
  *  - Mixpanel gets every outcome (startup result, banner loaded/failed), so the
  *    fill rate and "why no ads" breakdown are measurable per build.
- *  - Sentry gets only failures someone has to act on — a misconfigured consent
- *    message, an SDK that won't start, an invalid ad request. `no-fill` and
+ *  - Sentry gets only failures someone has to act on — an SDK that won't
+ *    start, an invalid ad request, a missing app ID. `no-fill` and
  *    `network-error` are routine (no inventory; a phone offline mid-hurricane)
  *    and would bury the real errors, so they never reach Sentry.
  *
@@ -19,7 +19,7 @@ import { initAnalytics, track } from "../../utils/analytics";
  * stable Sentry grouping key, low-cardinality tags, and a de-dupe guard.
  */
 
-export type AdsStartupOutcome = "ready" | "no-consent" | "startup-failed";
+export type AdsStartupOutcome = "ready" | "startup-failed";
 
 /** Banner error codes that are normal operation, not bugs. */
 const EXPECTED_BANNER_CODES = new Set([
@@ -64,24 +64,14 @@ const reportFailure = (type: string, error: unknown) => {
   });
 };
 
-export const reportConsentFailed = (error: unknown) => {
-  console.warn("[ads] consent update failed, using last known consent:", error);
-  reportFailure("consent-failed", error);
-};
-
 export const reportStartupFailed = (error: unknown) => {
   console.warn("[ads] startup failed, no ads this session:", error);
   reportFailure("startup-failed", error);
 };
 
-export const reportStartupOutcome = (
-  outcome: AdsStartupOutcome,
-  consentFailed: boolean,
-) => {
-  console.log(
-    `[ads] startup outcome=${outcome} consentFailed=${consentFailed}`,
-  );
-  trackEvent("ads_startup", { outcome, consent_failed: consentFailed });
+export const reportStartupOutcome = (outcome: AdsStartupOutcome) => {
+  console.log(`[ads] startup outcome=${outcome}`);
+  trackEvent("ads_startup", { outcome });
 };
 
 export const reportBannerLoaded = () => {

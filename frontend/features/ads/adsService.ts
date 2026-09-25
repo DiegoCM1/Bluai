@@ -1,18 +1,18 @@
-import mobileAds, { AdsConsent } from "react-native-google-mobile-ads";
+import mobileAds from "react-native-google-mobile-ads";
 
 import { ADS_ENABLED } from "../../utils/platformFeatures";
-import {
-  reportConsentFailed,
-  reportStartupFailed,
-  reportStartupOutcome,
-} from "./adsTelemetry";
+import { reportStartupFailed, reportStartupOutcome } from "./adsTelemetry";
 
 /**
- * One-time AdMob startup: consent first, then the SDK.
+ * One-time AdMob startup.
  *
- * The order is Google's requirement, not a preference — `initialize()` can
- * start preloading ads, so the user's consent choice (the UMP form, shown only
- * in the EEA/UK) has to exist before it runs.
+ * No consent step: Bluai is distributed only in Mexico, where no ad-consent
+ * form is required. Google's consent SDK (UMP) is still bundled with this
+ * library, but calling it without a consent message configured in AdMob fails
+ * with "Publisher misconfiguration" on every launch. If the app ever ships to
+ * the EEA/UK, configure a GDPR message in AdMob (Privacy & messaging) and call
+ * `AdsConsent.gatherConsent()` here, BEFORE `initialize()` — initializing can
+ * start preloading ads, so consent must exist first.
  *
  * Idempotent: every caller gets the same promise. `_layout.tsx` kicks it off at
  * launch, and `AdBanner` awaits it before requesting an ad. It resolves to
@@ -30,30 +30,13 @@ export const initAds = (): Promise<boolean> => {
 const start = async (): Promise<boolean> => {
   if (!ADS_ENABLED) return false;
 
-  let consentFailed = false;
   try {
-    let canRequestAds: boolean;
-    try {
-      ({ canRequestAds } = await AdsConsent.gatherConsent());
-    } catch (error) {
-      // Offline, or the consent message isn't configured in AdMob yet. Fall
-      // back to the choice stored from a previous session, as Google's UMP
-      // samples do; with none stored this is false and the session has no ads.
-      consentFailed = true;
-      reportConsentFailed(error);
-      ({ canRequestAds } = await AdsConsent.getConsentInfo());
-    }
-    if (!canRequestAds) {
-      reportStartupOutcome("no-consent", consentFailed);
-      return false;
-    }
-
     await mobileAds().initialize();
-    reportStartupOutcome("ready", consentFailed);
+    reportStartupOutcome("ready");
     return true;
   } catch (error) {
     reportStartupFailed(error);
-    reportStartupOutcome("startup-failed", consentFailed);
+    reportStartupOutcome("startup-failed");
     return false;
   }
 };

@@ -134,6 +134,17 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
         """))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
         await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS test_billing_invoices (
+                payment_id VARCHAR(100) PRIMARY KEY,
+                user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                provider_id VARCHAR(24) UNIQUE,
+                status VARCHAR(20) NOT NULL DEFAULT 'pending',
+                payload JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+
+        await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS fiscal_profiles (
                 user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
                 rfc VARCHAR(13) NOT NULL,

@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     # Payments — MercadoPago (optional; omit to disable)
     MP_ACCESS_TOKEN: str = ""
 
+    FACTURAPI_TEST_SECRET_KEY: str = ""
+    FACTURAPI_TEST_USD_EXCHANGE: float = 20.0  # Fictitious sandbox rate only.
+
     # Dev-only bypasses
     DEV_BYPASS_MAP_EVENTS_AUTH: bool = False
 

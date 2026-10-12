@@ -48,6 +48,7 @@ EXPECTED_TABLES = {
     "user_alert_states",
     "subscriptions",
     "subscription_events",
+    "fiscal_profiles",
     "family_members",
 }
 

@@ -15,6 +15,7 @@ from app.features.sos_contacts.router import router as sos_contacts_router
 from app.features.sos_invite.router import router as sos_invite_router
 from app.features.sos_trigger.router import router as sos_trigger_router
 from app.features.payments.router import router as payments_router
+from app.features.billing.router import router as billing_router
 from app.features.siat.service import ensure_siat_tables, run_cycle
 from app.features.alerts.providers.smn import fetch_latest_bulletin
 from app.features.alerts.providers.smn_ciclon import fetch_active_advisories
@@ -132,6 +133,18 @@ async def ensure_core_tables(engine: AsyncEngine) -> None:
                 ADD COLUMN IF NOT EXISTS age_range  VARCHAR(10)
         """))
         await conn.execute(text('CREATE EXTENSION IF NOT EXISTS "pgcrypto"'))
+        await conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS fiscal_profiles (
+                user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                rfc VARCHAR(13) NOT NULL,
+                legal_name VARCHAR(255) NOT NULL,
+                postal_code VARCHAR(5) NOT NULL,
+                tax_regime VARCHAR(3) NOT NULL,
+                cfdi_use VARCHAR(3) NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )
+        """))
+
         await conn.execute(text("""
             CREATE TABLE IF NOT EXISTS notification_preferences (
                 user_id            BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
@@ -452,3 +465,4 @@ app.include_router(sos_contacts_router)
 app.include_router(sos_invite_router)
 app.include_router(sos_trigger_router)
 app.include_router(payments_router)
+app.include_router(billing_router)

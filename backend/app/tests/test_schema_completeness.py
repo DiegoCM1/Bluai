@@ -49,6 +49,7 @@ EXPECTED_TABLES = {
     "subscriptions",
     "subscription_events",
     "fiscal_profiles",
+    "test_billing_invoices",
     "family_members",
 }
 

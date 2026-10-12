@@ -1,5 +1,6 @@
 import asyncio
 import json
+import hashlib
 
 import stripe
 from fastapi import HTTPException
@@ -66,6 +67,22 @@ async def issue(db: AsyncSession, user_id: int, payment_id: str) -> dict:
     if not profile:
         raise HTTPException(409, "Guarda tus datos fiscales antes de solicitar la factura.")
     payload = provider.test_payload(FiscalProfile(**profile), invoice["amount_paid"], invoice["currency"], "bluai-test-" + payment_id)
+    return await persist_invoice(db, user_id, payment_id, payload)
+
+
+async def demo_issue(db: AsyncSession, user_id: int) -> dict:
+    provider.test_key()
+    profile = await get_fiscal_profile(db, user_id)
+    if not profile:
+        raise HTTPException(409, "Guarda tus datos fiscales antes de generar el documento de demostración.")
+    fingerprint = hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()[:24]
+    reference = f"demo_{user_id}_{fingerprint}"
+    payload = provider.test_payload(FiscalProfile(**profile), 499, "USD", "bluai-demo-production-" + reference)
+    result = await persist_invoice(db, user_id, reference, payload)
+    return {**result, "payment_id": None}
+
+
+async def persist_invoice(db: AsyncSession, user_id: int, payment_id: str, payload: dict) -> dict:
     # Persist the original fiscal snapshot before sending anything externally.
     await db.execute(text("""
         INSERT INTO test_billing_invoices (payment_id, user_id, payload)

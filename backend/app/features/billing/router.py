@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
+from app.core.config import settings
 from app.features.users.service import get_user_by_firebase_uid
 from .schemas import BillingCapabilities, FiscalProfile, InvoiceRequest, TestInvoice
 from . import invoices, provider
@@ -15,6 +16,8 @@ router = APIRouter(prefix="/api/v1/billing", tags=["billing"])
 @router.get("/capabilities", response_model=BillingCapabilities)
 async def capabilities():
     ready = provider.configured()
+    if settings.RAILWAY_ENVIRONMENT_NAME.lower() == "production":
+        return BillingCapabilities(status="facturapi_demo", demo_invoicing_available=ready)
     try:
         invoices.stripe_key()
         stripe_ready = True
@@ -56,6 +59,11 @@ async def paid_memberships(db: AsyncSession = Depends(get_db), user_id: int = De
 @router.post("/invoices", response_model=TestInvoice)
 async def create_test_invoice(body: InvoiceRequest, db: AsyncSession = Depends(get_db), user_id: int = Depends(billing_user_id)):
     return await invoices.issue(db, user_id, body.payment_id)
+
+
+@router.post("/demo-invoice", response_model=TestInvoice)
+async def create_demo_invoice(db: AsyncSession = Depends(get_db), user_id: int = Depends(billing_user_id)):
+    return await invoices.demo_issue(db, user_id)
 
 
 @router.get("/invoices/{invoice_id}/{file_format}")

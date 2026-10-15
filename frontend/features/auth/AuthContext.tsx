@@ -1,5 +1,5 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react'
-import { Platform } from 'react-native'
+import { createContext, useContext, useEffect, useRef, useState, ReactNode } from 'react'
+import { AppState, Platform } from 'react-native'
 import {
   getAuth,
   onAuthStateChanged,
@@ -16,10 +16,26 @@ import * as Sentry from '@sentry/react-native'
 import { authFetch } from '../../utils/api'
 import { API_BASE_URL } from '../../utils/config'
 import type { AuthContextValue } from './types'
+import {
+  AUTH_FAILURE_COPY,
+  authBreadcrumb,
+  reportAuthFailure,
+  resetAuthFailureReporting,
+  toMessage,
+  type AuthFailure,
+  type AuthTelemetryContext,
+} from './authTelemetry'
 
 GoogleSignin.configure({
   webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
 })
+
+// The Apple sheet is a system UI: presenting it moves the app out of `active`.
+// No AppState change within this window ⇒ iOS never showed the sheet (build 18's
+// App Review rejection on iPad). Generous on purpose — nonce + IPC take ~100ms.
+const APPLE_SHEET_PRESENT_TIMEOUT_MS = 3_000
+// Backstop for a sheet that was shown but never returned to us.
+const APPLE_SHEET_TOTAL_TIMEOUT_MS = 120_000
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
@@ -28,6 +44,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true)
   const [signingIn, setSigningIn] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Monotonic attempt id. A native result is acted on only if no newer attempt has
+  // started since — so a slow, abandoned request can't clobber a fresh one.
+  const attemptRef = useRef(0)
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(getAuth(), (firebaseUser) => {
@@ -45,7 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   async function upsertUserProfile() {
     try {
-      await authFetch(`${process.env.EXPO_PUBLIC_API_URL}/api/v1/users/me`, { method: 'POST' })
+      await authFetch(`${API_BASE_URL}/api/v1/users/me`, { method: 'POST' })
     } catch (e) {
       console.warn('[Bluai] Failed to upsert user profile:', e)
     }
@@ -76,10 +95,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
-  async function signInWithGoogle() {
-    if (signingIn) return
+  /** Report a failure and show its copy (if any) to the user. */
+  function failSignIn(
+    failure: AuthFailure,
+    ctx: AuthTelemetryContext,
+    level?: Sentry.SeverityLevel,
+  ) {
+    reportAuthFailure(failure, ctx, level)
+    const copy = AUTH_FAILURE_COPY[failure.type]
+    if (copy) setError(copy)
+  }
+
+  /** Starts an attempt; returns helpers scoped to it. */
+  function beginAttempt() {
+    const attempt = ++attemptRef.current
+    const startedAt = Date.now()
+    resetAuthFailureReporting()
     setSigningIn(true)
     setError(null)
+    return {
+      attempt,
+      isCurrent: () => attempt === attemptRef.current,
+      elapsed: () => Date.now() - startedAt,
+      // Only the current attempt may release the UI — a stale one finishing late
+      // must not flip `signingIn` off under a fresh attempt.
+      release: () => {
+        if (attempt === attemptRef.current) setSigningIn(false)
+      },
+    }
+  }
+
+  async function signInWithGoogle() {
+    if (signingIn) return
+    const { attempt, isCurrent, elapsed, release } = beginAttempt()
+    authBreadcrumb('google: tap', { attempt })
     try {
       const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID
       if (!webClientId) {
@@ -88,33 +137,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       await GoogleSignin.hasPlayServices()
       const { cancelled, idToken } = await getGoogleIdToken()
+      if (!isCurrent()) return
 
-      if (cancelled) return
-
-      if (!idToken) {
-        console.error('[Bluai] Google Sign-In returned no ID token', {
-          webClientIdConfigured: Boolean(webClientId),
-        })
-        throw new Error('Google Sign-In returned no ID token')
+      if (cancelled) {
+        authBreadcrumb('google: canceled', { elapsedMs: elapsed() })
+        return
       }
 
-      const credential = GoogleAuthProvider.credential(idToken)
-      await signInWithCredential(getAuth(), credential)
-      await upsertUserProfile()
+      if (!idToken) {
+        failSignIn(
+          {
+            type: 'no-identity-token',
+            phase: 'provider-credential',
+            message: 'Google Sign-In returned no ID token',
+          },
+          { provider: 'google', elapsedMs: elapsed() },
+        )
+        return
+      }
+      authBreadcrumb('google: credential received', { elapsedMs: elapsed() })
+
+      try {
+        await signInWithCredential(getAuth(), GoogleAuthProvider.credential(idToken))
+      } catch (e: any) {
+        failSignIn(
+          {
+            type: 'firebase-rejected',
+            phase: 'firebase',
+            message: toMessage(e),
+          },
+          { provider: 'google', code: e?.code, elapsedMs: elapsed() },
+        )
+        return
+      }
+      authBreadcrumb('google: firebase signed in', { elapsedMs: elapsed() })
     } catch (e: any) {
+      if (!isCurrent()) return
       if (e?.code === statusCodes.SIGN_IN_CANCELLED) return
       if (e?.code === statusCodes.IN_PROGRESS) return
-      console.error('[Bluai] Google Sign-In failed', {
-        code: e?.code,
-        message: e?.message,
-      })
-      Sentry.captureException(e, {
-        tags: { flow: 'google-signin' },
-        extra: { code: e?.code },
-      })
-      setError('No se pudo iniciar sesión. Intenta de nuevo.')
+      failSignIn(
+        { type: 'provider-error', phase: 'sheet', message: toMessage(e) },
+        { provider: 'google', code: e?.code, elapsedMs: elapsed() },
+      )
     } finally {
-      setSigningIn(false)
+      release()
     }
   }
 
@@ -124,15 +190,48 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setError('Sign in with Apple solo está disponible en iOS.')
       return
     }
-    setSigningIn(true)
-    setError(null)
-    try {
-      const available = await AppleAuthentication.isAvailableAsync()
-      if (!available) {
-        setError('Sign in with Apple no está disponible en este dispositivo.')
-        return
-      }
+    const { attempt, isCurrent, elapsed, release } = beginAttempt()
+    authBreadcrumb('apple: tap', { attempt })
 
+    // Watchdog. A native request that never settles used to leave `signingIn` stuck
+    // true forever — the button lost its handler and every later tap did nothing,
+    // with nothing thrown and nothing reported. The watchdog releases the UI and
+    // reports, but deliberately does NOT abandon the request: if the sheet was in
+    // fact shown and AppState just didn't flip, a late credential still signs in.
+    let sheetPresented = false
+    const appStateSub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' && !sheetPresented) {
+        sheetPresented = true
+        authBreadcrumb('apple: sheet presented', { elapsedMs: elapsed() })
+      }
+    })
+    const presentTimer = setTimeout(() => {
+      if (sheetPresented || !isCurrent()) return
+      failSignIn(
+        {
+          type: 'sheet-not-presented',
+          phase: 'sheet',
+          message: `no AppState change within ${APPLE_SHEET_PRESENT_TIMEOUT_MS}ms`,
+        },
+        { provider: 'apple', elapsedMs: elapsed() },
+      )
+      release()
+    }, APPLE_SHEET_PRESENT_TIMEOUT_MS)
+    const totalTimer = setTimeout(() => {
+      if (!isCurrent()) return
+      failSignIn(
+        {
+          type: 'sheet-timeout',
+          phase: 'sheet',
+          message: `no result within ${APPLE_SHEET_TOTAL_TIMEOUT_MS}ms`,
+        },
+        { provider: 'apple', elapsedMs: elapsed() },
+        'warning',
+      )
+      release()
+    }, APPLE_SHEET_TOTAL_TIMEOUT_MS)
+
+    try {
       const rawNonceBytes = await Crypto.getRandomBytesAsync(32)
       const rawNonce = Array.from(rawNonceBytes)
         .map((b) => b.toString(16).padStart(2, '0'))
@@ -141,6 +240,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         Crypto.CryptoDigestAlgorithm.SHA256,
         rawNonce,
       )
+      authBreadcrumb('apple: nonce ready', { elapsedMs: elapsed() })
 
       const appleCredential = await AppleAuthentication.signInAsync({
         requestedScopes: [
@@ -149,33 +249,77 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ],
         nonce: hashedNonce,
       })
+      if (!isCurrent()) {
+        authBreadcrumb('apple: stale result ignored', { attempt })
+        return
+      }
+      authBreadcrumb('apple: credential received', {
+        elapsedMs: elapsed(),
+        sheetPresented,
+      })
 
       if (!appleCredential.identityToken) {
-        console.error('[Bluai] Apple Sign-In returned no identity token')
-        throw new Error('Apple Sign-In returned no identity token')
+        failSignIn(
+          {
+            type: 'no-identity-token',
+            phase: 'provider-credential',
+            message: 'Apple Sign-In returned no identity token',
+          },
+          { provider: 'apple', elapsedMs: elapsed() },
+        )
+        return
       }
 
       // `AppleAuthProvider.credential` is **static** and takes two positional
       // strings — (identityToken, rawNonce).
-      const credential = AppleAuthProvider.credential(
-        appleCredential.identityToken,
-        rawNonce,
-      )
-      await signInWithCredential(getAuth(), credential)
-      await upsertUserProfile()
+      const credential = AppleAuthProvider.credential(appleCredential.identityToken, rawNonce)
+      try {
+        await signInWithCredential(getAuth(), credential)
+      } catch (e: any) {
+        failSignIn(
+          {
+            type: 'firebase-rejected',
+            phase: 'firebase',
+            message: toMessage(e),
+          },
+          { provider: 'apple', code: e?.code, elapsedMs: elapsed() },
+        )
+        return
+      }
+      // A watchdog may have shown an error before this late success landed.
+      setError(null)
+      authBreadcrumb('apple: firebase signed in', { elapsedMs: elapsed() })
     } catch (e: any) {
-      if (e?.code === 'ERR_REQUEST_CANCELED') return
-      console.error('[Bluai] Apple Sign-In failed', {
-        code: e?.code,
-        message: e?.message,
-      })
-      Sentry.captureException(e, {
-        tags: { flow: 'apple-signin' },
-        extra: { code: e?.code },
-      })
-      setError('No se pudo iniciar sesión con Apple. Intenta de nuevo.')
+      if (!isCurrent()) return
+      if (e?.code === 'ERR_REQUEST_CANCELED') {
+        authBreadcrumb('apple: canceled', {
+          elapsedMs: elapsed(),
+          sheetPresented,
+        })
+        // A user can only cancel a sheet they saw. "Canceled" with no sheet is iOS
+        // failing on its own — exactly the case that never reached Sentry before.
+        if (!sheetPresented) {
+          failSignIn(
+            {
+              type: 'cancel-without-sheet',
+              phase: 'sheet',
+              message: toMessage(e),
+            },
+            { provider: 'apple', code: e?.code, elapsedMs: elapsed() },
+            'warning',
+          )
+        }
+        return
+      }
+      failSignIn(
+        { type: 'provider-error', phase: 'sheet', message: toMessage(e) },
+        { provider: 'apple', code: e?.code, elapsedMs: elapsed() },
+      )
     } finally {
-      setSigningIn(false)
+      clearTimeout(presentTimer)
+      clearTimeout(totalTimer)
+      appStateSub.remove()
+      release()
     }
   }
 

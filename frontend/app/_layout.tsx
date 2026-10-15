@@ -37,7 +37,8 @@ import { PENDING_SOS_INVITE_KEY } from "./sos-invite/[token]";
 export const PENDING_SOS_CONTACT_ADDED_KEY = "@BluEye:pending_sos_contact_added";
 import { hasCompletedOnboarding } from "./onboarding/_services/onboardingService"
 import { syncProfileIfPending } from "../utils/profileSync"
-import { authFetch } from "../utils/api"
+import { authFetch, isTimeoutError } from "../utils/api"
+import { authBreadcrumb, reportAuthFailure } from "../features/auth/authTelemetry"
 import { API_BASE_URL } from "../utils/config"
 import { usePathname } from "expo-router";
 import * as Sentry from '@sentry/react-native';
@@ -68,6 +69,8 @@ if (Platform.OS !== "web") {
   initExecutorch({ resourceFetcher: ExpoResourceFetcher });
 }
 const DEV_BYPASS_AUTH = process.env.EXPO_PUBLIC_DEV_BYPASS_AUTH === 'true'
+// Post-login routing waits on POST /users/me; past this, fall back to onboarding.
+const PROFILE_ROUTING_TIMEOUT_MS = 10_000
 
 interface NotificationData {
   alertId?: string
@@ -188,18 +191,42 @@ function AuthGate({ children }) {
           router.replace('/(tabs)/MapScreen')
           return
         }
-        // AsyncStorage vacío (e.g. reinstalación): verificar backend como fuente de verdad
+        // AsyncStorage vacío (e.g. reinstalación): verificar backend como fuente de verdad.
+        // Con timeout: sin él, un backend lento dejaba al usuario —ya autenticado— varado
+        // en la pantalla de login, que App Review lee como "el botón no hace nada".
+        const provider = user.providerData.some((p) => p.providerId === 'apple.com') ? 'apple' : 'google'
+        const startedAt = Date.now()
         try {
-          const res = await authFetch(`${API_BASE_URL}/api/v1/users/me`, { method: 'POST' })
+          const res = await authFetch(`${API_BASE_URL}/api/v1/users/me`, {
+            method: 'POST',
+            timeoutMs: PROFILE_ROUTING_TIMEOUT_MS,
+          })
           if (res.ok) {
             const profile = await res.json()
             if (profile?.display_name) {
               await AsyncStorage.setItem('@blueye_onboarding_completed', 'true')
+              authBreadcrumb('routing: profile complete → map')
               router.replace('/(tabs)/MapScreen')
               return
             }
+          } else {
+            reportAuthFailure(
+              { type: 'profile-failed', phase: 'routing', message: `POST /users/me → ${res.status}` },
+              { provider, httpStatus: res.status, elapsedMs: Date.now() - startedAt },
+            )
           }
-        } catch { /* si falla, continúa a onboarding */ }
+        } catch (e) {
+          // Si falla, continúa a onboarding — pero ya no en silencio.
+          reportAuthFailure(
+            {
+              type: isTimeoutError(e) ? 'profile-timeout' : 'profile-failed',
+              phase: 'routing',
+              message: toMessage(e),
+            },
+            { provider, elapsedMs: Date.now() - startedAt },
+          )
+        }
+        authBreadcrumb('routing: → onboarding')
         router.replace('/onboarding/step1')
       }
       checkAndRoute()

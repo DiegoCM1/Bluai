@@ -25,6 +25,7 @@ import {
   type AuthFailure,
   type AuthTelemetryContext,
 } from './authTelemetry'
+import { saveAppleName } from './appleName'
 
 GoogleSignin.configure({
   webClientId: process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID,
@@ -269,6 +270,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         )
         return
       }
+
+      // Guideline 4: never ask for what Apple already gave us. Persist the name now —
+      // before signInWithCredential routes to onboarding, which prefills from it.
+      const nameSaved = await saveAppleName(appleCredential.fullName)
+      authBreadcrumb('apple: name', { provided: nameSaved })
 
       // `AppleAuthProvider.credential` is **static** and takes two positional
       // strings — (identityToken, rawNonce).

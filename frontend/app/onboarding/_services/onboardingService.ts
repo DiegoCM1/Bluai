@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { OnboardingData } from '../_types';
+import { APPLE_NAME_KEY } from '../../../features/auth/appleName';
 
 const ONBOARDING_KEY = '@blueye_onboarding';
 const ONBOARDING_COMPLETED_KEY = '@blueye_onboarding_completed';
@@ -102,6 +103,7 @@ export const clearOnboardingData = async (): Promise<void> => {
       ONBOARDING_COMPLETED_KEY,
       PROFILE_SYNCED_KEY,
       ONBOARDING_UID_KEY,
+      APPLE_NAME_KEY,
     ]);
   } catch (error) {
     console.error('Error clearing onboarding data:', error);

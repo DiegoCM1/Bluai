@@ -1,12 +1,15 @@
-import React, { ReactNode } from 'react';
+import React, { ReactNode, RefObject } from 'react';
 import {
   View,
   Text,
   ScrollView,
-  KeyboardAvoidingView,
   Platform,
   TouchableOpacity,
 } from 'react-native';
+// keyboard-controller's version, not RN's: it measures the keyboard against the app
+// window, which RN's gets wrong when an iPhone-only app runs scaled on an iPad — the
+// footer button could end up under the keyboard (App Review, build 19).
+import { KeyboardAvoidingView } from 'react-native-keyboard-controller';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { ProgressIndicator } from './ProgressIndicator';
 
@@ -22,6 +25,8 @@ interface WizardContainerProps {
   backLabel?: string;
   nextDisabled?: boolean;
   isLoading?: boolean;
+  /** Lets a step scroll to its first invalid field. */
+  scrollRef?: RefObject<ScrollView | null>;
 }
 
 export const WizardContainer: React.FC<WizardContainerProps> = ({
@@ -36,18 +41,20 @@ export const WizardContainer: React.FC<WizardContainerProps> = ({
   backLabel = 'Atrás',
   nextDisabled = false,
   isLoading = false,
+  scrollRef,
 }) => {
   return (
     <SafeAreaView className="flex-1 bg-transparent" edges={['top', 'bottom']}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        className="flex-1"
+        style={{ flex: 1 }}
       >
         <View className="border-b border-white/20">
           <ProgressIndicator totalSteps={totalSteps} currentStep={currentStep} />
         </View>
 
         <ScrollView
+          ref={scrollRef}
           className="flex-1 px-6"
           contentContainerStyle={{ paddingTop: 24, paddingBottom: 24 }}
           keyboardShouldPersistTaps="handled"
@@ -91,7 +98,7 @@ export const WizardContainer: React.FC<WizardContainerProps> = ({
               } ${
                 nextDisabled || isLoading
                   ? 'bg-white/20'
-                  : 'bg-phase2Buttons'
+                  : 'bg-brand-blue'
               }`}
               accessibilityRole="button"
               accessibilityLabel={nextLabel}

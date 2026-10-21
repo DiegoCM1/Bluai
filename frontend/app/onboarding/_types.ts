@@ -74,6 +74,9 @@ export interface OnboardingData {
     'Veracruz',
     'Yucatán',
     'Zacatecas',
+    // Escape hatch for anyone outside Mexico (App Review tests from the US). The
+    // backend stores `state` as free text and nothing keys logic off it.
+    'Fuera de México',
   ] as const;
 
   export type MexicoState = typeof MEXICO_STATES[number];

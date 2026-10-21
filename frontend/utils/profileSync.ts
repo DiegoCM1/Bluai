@@ -1,6 +1,6 @@
 import * as Sentry from "@sentry/react-native";
 import { getAuth } from "@react-native-firebase/auth";
-import { authFetch } from "./api";
+import { authFetch, isTimeoutError } from "./api";
 import { API_BASE_URL } from "./config";
 import {
   getStoredProfile,
@@ -32,7 +32,13 @@ export type ProfileSyncFailureType =
   | "unauthorized" // 401 tras el refresh de token que hace authFetch
   | "rejected" // otro 4xx: el payload es inválido y reintentar no lo arregla
   | "unreachable" // 5xx o error de red — reintentable
+  | "timeout" // no respondió en PROFILE_PUSH_TIMEOUT_MS — reintentable
   | "unknown";
+
+// Onboarding's "Finalizar" waits on this request. Without a cap, a slow backend left
+// the button stuck on "Cargando…" — the same class of bug App Review rejected build
+// 19 for. On timeout the user proceeds and the next launch retries.
+const PROFILE_PUSH_TIMEOUT_MS = 10_000;
 
 let syncInFlight = false;
 let lastReportedKey: string | null = null;
@@ -190,6 +196,7 @@ export async function pushProfile(
     const res = await authFetch(`${API_BASE_URL}/api/v1/users/me/profile`, {
       method: "PUT",
       body: JSON.stringify(payload),
+      timeoutMs: PROFILE_PUSH_TIMEOUT_MS,
     });
 
     // El punto entero del arreglo. `authFetch` devuelve el Response tal cual y NUNCA
@@ -238,13 +245,15 @@ export async function pushProfile(
     breadcrumb("profile saved", { fields });
     return { ok: true };
   } catch (err) {
-    // authFetch RECHAZA si no hay sesión o si la red falla — no devuelve un Response.
-    reportFailure(
-      "unreachable",
-      err instanceof Error ? err.message : String(err),
-      { fields },
-    );
-    return { ok: false, failure: "unreachable" };
+    // authFetch RECHAZA si no hay sesión, si la red falla o si vence el timeout —
+    // no devuelve un Response.
+    const type: ProfileSyncFailureType = isTimeoutError(err)
+      ? "timeout"
+      : "unreachable";
+    reportFailure(type, err instanceof Error ? err.message : String(err), {
+      fields,
+    });
+    return { ok: false, failure: type };
   }
 }
 

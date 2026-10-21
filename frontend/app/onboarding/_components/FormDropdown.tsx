@@ -91,7 +91,7 @@ export const FormDropdown: React.FC<FormDropdownProps> = ({
                     <Text
                       className={`text-base ${
                         item === value
-                          ? 'font-semibold text-phase2Buttons'
+                          ? 'font-semibold text-brand-blue'
                           : 'text-gray-900'
                       }`}
                     >

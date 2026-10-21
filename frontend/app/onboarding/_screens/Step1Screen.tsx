@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Alert, View, Text, TouchableOpacity, ActivityIndicator } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Alert, View, Text, TouchableOpacity, ActivityIndicator, Keyboard, ScrollView } from 'react-native';
 import { useRouter } from 'expo-router';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import * as Location from 'expo-location';
@@ -12,12 +12,22 @@ import { MEXICO_STATES } from '../_types';
 import { track } from '../../../utils/analytics';
 import { syncLocationToBackend } from '../../../utils/locationSync';
 import { colors } from '../../../utils/theme';
+import { onboardingBreadcrumb, reportOnboardingFailure } from '../_services/onboardingTelemetry';
 
 export const Step1Screen: React.FC = () => {
   const router = useRouter();
   const { data, updateField, updateMultipleFields } = useOnboarding();
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isLoadingLocation, setIsLoadingLocation] = useState(false);
+  const [stateHint, setStateHint] = useState<string | null>(null);
+  const scrollRef = useRef<ScrollView>(null);
+  // y of the location section inside the ScrollView — every field that can fail
+  // validation lives there, so a failed "Continuar" scrolls to it.
+  const locationSectionY = useRef(0);
+
+  useEffect(() => {
+    onboardingBreadcrumb('step1: mounted');
+  }, []);
 
   const handleUseLocation = async () => {
     setIsLoadingLocation(true);
@@ -68,7 +78,15 @@ export const Step1Screen: React.FC = () => {
       if (address) {
         const updates: any = {};
 
-        if (address.region) updates.state = address.region;
+        // Only accept a region that is actually in the list. Outside Mexico (App
+        // Review tests from the US) the region would be an unselectable value.
+        const region = address.region ?? '';
+        if ((MEXICO_STATES as readonly string[]).includes(region)) {
+          updates.state = region;
+          setStateHint(null);
+        } else {
+          setStateHint('Bluai cubre estados de México. Selecciona el más cercano o "Fuera de México".');
+        }
         if (address.postalCode) updates.zipCode = address.postalCode;
         if (address.street && address.streetNumber) {
           updates.address1 = `${address.street} ${address.streetNumber}`;
@@ -99,12 +117,22 @@ export const Step1Screen: React.FC = () => {
   };
 
   const handleNext = () => {
+    // A number-pad keyboard has no return key; dismiss it so it can't sit over the
+    // footer or eat the next tap.
+    Keyboard.dismiss();
     const validation = validateStep1(data);
+    const invalidFields = Object.keys(validation.errors);
+    onboardingBreadcrumb('step1: continuar tapped', { valid: validation.isValid, invalidFields });
 
     if (!validation.isValid) {
       setErrors(validation.errors);
+      track('onboarding_step1_blocked', { fields: invalidFields });
+      reportOnboardingFailure('validation-blocked', 'step1', { fields: invalidFields }, 'warning');
+      // Bring the invalid field into view — an error on a field scrolled off-screen
+      // is how a tap reads as "nothing happened".
+      scrollRef.current?.scrollTo({ y: locationSectionY.current, animated: true });
       const firstError = Object.values(validation.errors)[0];
-      Alert.alert('Error de validación', firstError);
+      Alert.alert('Falta un dato', firstError);
       return;
     }
 
@@ -112,6 +140,7 @@ export const Step1Screen: React.FC = () => {
     track('onboarding_step1_completed', {
       has_address2: !!data.address2,
     });
+    onboardingBreadcrumb('step1: → step2');
     router.push('/onboarding/step2');
   };
 
@@ -123,6 +152,7 @@ export const Step1Screen: React.FC = () => {
       subtitle="Ayúdanos a conocerte mejor para brindarte alertas más precisas"
       onNext={handleNext}
       nextLabel="Continuar"
+      scrollRef={scrollRef}
     >
       <View className="mb-6">
         <View className="flex-row items-center mb-3">
@@ -135,12 +165,11 @@ export const Step1Screen: React.FC = () => {
         <View className="flex-row gap-3">
           <View className="flex-1">
             <FormInput
-              label="Nombre"
+              label="Nombre (opcional)"
               value={data.firstName}
               onChangeText={(value) => updateField('firstName', value)}
               placeholder="Juan"
               error={errors.firstName}
-              required
               autoComplete="given-name"
               textContentType="givenName"
             />
@@ -148,12 +177,11 @@ export const Step1Screen: React.FC = () => {
 
           <View className="flex-1">
             <FormInput
-              label="Apellido"
+              label="Apellido (opcional)"
               value={data.lastName}
               onChangeText={(value) => updateField('lastName', value)}
               placeholder="Hernández"
               error={errors.lastName}
-              required
               autoComplete="family-name"
               textContentType="familyName"
             />
@@ -176,7 +204,12 @@ export const Step1Screen: React.FC = () => {
         </Text>
       </View>
 
-      <View className="mb-6">
+      <View
+        className="mb-6"
+        onLayout={(e) => {
+          locationSectionY.current = e.nativeEvent.layout.y;
+        }}
+      >
         <View className="flex-row items-center justify-between mb-3">
           <View className="flex-row items-center">
             <MaterialCommunityIcons name="map-marker" size={24} color={colors.brandBlue} />
@@ -205,12 +238,11 @@ export const Step1Screen: React.FC = () => {
         </View>
 
         <FormInput
-          label="Dirección"
+          label="Dirección (opcional)"
           value={data.address1}
           onChangeText={(value) => updateField('address1', value)}
           placeholder="Av. Insurgentes Sur 1234"
           error={errors.address1}
-          required
           autoComplete="street-address"
           textContentType="streetAddressLine1"
           autoCapitalize="words"
@@ -229,13 +261,14 @@ export const Step1Screen: React.FC = () => {
         <View className="flex-row gap-3">
           <View className="flex-1">
             <FormInput
-              label="Código Postal"
+              label="C.P. (opcional)"
               value={data.zipCode}
               onChangeText={(value) => updateField('zipCode', value)}
               placeholder="01000"
               error={errors.zipCode}
-              required
               keyboardType="number-pad"
+              returnKeyType="done"
+              onSubmitEditing={Keyboard.dismiss}
               autoComplete="postal-code"
               textContentType="postalCode"
               maxLength={5}
@@ -246,7 +279,10 @@ export const Step1Screen: React.FC = () => {
             <FormDropdown
               label="Estado"
               value={data.state}
-              onValueChange={(value) => updateField('state', value)}
+              onValueChange={(value) => {
+                updateField('state', value);
+                setStateHint(null);
+              }}
               options={MEXICO_STATES}
               placeholder="Selecciona"
               error={errors.state}
@@ -255,8 +291,12 @@ export const Step1Screen: React.FC = () => {
           </View>
         </View>
 
+        {stateHint && (
+          <Text className="text-xs text-brand-yellow mt-1">{stateHint}</Text>
+        )}
+
         <Text className="text-xs text-white/60 mt-1">
-          Necesitamos tu ubicación para enviarte alertas relevantes de tu zona
+          Solo el estado es obligatorio. Con él te enviamos alertas relevantes de tu zona.
         </Text>
       </View>
     </WizardContainer>

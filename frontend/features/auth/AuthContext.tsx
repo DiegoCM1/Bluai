@@ -344,9 +344,60 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  /**
+   * Guideline 5.1.1(v): deleting an account created with Sign in with Apple must also
+   * revoke its Apple token, so Bluai disappears from the user's "Apps Using Apple
+   * Account". Deleting the Firebase user alone doesn't do that.
+   *
+   * Needs a FRESH authorization code (Apple's expire in ~5 min, so one saved at
+   * sign-in is useless) → `refreshAsync`, which shows a brief Apple confirmation.
+   * Must run BEFORE the backend deletes the Firebase user: Firebase's revokeToken
+   * acts on the signed-in user. Also requires the Apple provider in Firebase Console
+   * to have Team ID + Key ID + private key; without them revokeToken throws.
+   *
+   * Never throws and never blocks deletion — a deletion that fails because Apple
+   * couldn't be reached would itself violate 5.1.1(v). Failures go to Sentry.
+   */
+  async function revokeAppleTokenIfNeeded(user: FirebaseAuthTypes.User) {
+    if (Platform.OS !== 'ios') return
+    // Firebase stores Apple's stable user identifier (`sub`) as the provider uid —
+    // the same value `refreshAsync` needs to target the right Apple ID.
+    const appleUserId = user.providerData.find((p) => p.providerId === 'apple.com')?.uid
+    if (!appleUserId) return
+
+    const startedAt = Date.now()
+    authBreadcrumb('apple: revoke start')
+    try {
+      const { authorizationCode } = await AppleAuthentication.refreshAsync({ user: appleUserId })
+      if (!authorizationCode) {
+        reportAuthFailure(
+          { type: 'revoke-failed', phase: 'account-delete', message: 'Apple returned no authorizationCode' },
+          { provider: 'apple', elapsedMs: Date.now() - startedAt },
+        )
+        return
+      }
+      // The modular `revokeToken(auth, code)` helper only exists from RNFirebase v25;
+      // on v24 it's a method on the Auth instance (deprecated there, not removed).
+      await getAuth().revokeToken(authorizationCode)
+      authBreadcrumb('apple: revoke done', { elapsedMs: Date.now() - startedAt })
+    } catch (e: any) {
+      const canceled = e?.code === 'ERR_REQUEST_CANCELED'
+      reportAuthFailure(
+        {
+          type: canceled ? 'revoke-canceled' : 'revoke-failed',
+          phase: 'account-delete',
+          message: toMessage(e),
+        },
+        { provider: 'apple', code: e?.code, elapsedMs: Date.now() - startedAt },
+        canceled ? 'warning' : 'error',
+      )
+    }
+  }
+
   async function deleteAccount() {
     const currentUser = getAuth().currentUser
     if (!currentUser) throw new Error('No user logged in')
+    await revokeAppleTokenIfNeeded(currentUser)
     try {
       // `/api/v1/users/me` es el endpoint vigente; `/users/account` es un alias
       // `deprecated=True` que existe solo para builds viejos de tester. Si alguien lo

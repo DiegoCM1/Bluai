@@ -30,7 +30,8 @@ export type AuthPhase =
   | "sheet" // the native Apple / Google UI is (supposed to be) on screen
   | "provider-credential" // the provider handed back a token
   | "firebase" // signInWithCredential
-  | "routing"; // AuthGate deciding where a signed-in user lands (POST /users/me)
+  | "routing" // AuthGate deciding where a signed-in user lands (POST /users/me)
+  | "account-delete"; // revoking the Apple token before the account is deleted
 
 /** The named failure taxonomy. */
 export type AuthFailureType =
@@ -42,6 +43,8 @@ export type AuthFailureType =
   | "firebase-rejected" // both — signInWithCredential threw (provider disabled, network, bad nonce)
   | "profile-timeout" // both — AuthGate POST /users/me never answered
   | "profile-failed" // both — AuthGate POST /users/me answered non-OK or threw
+  | "revoke-canceled" // apple — user dismissed the Apple sheet during account deletion
+  | "revoke-failed" // apple — no code from Apple, or Firebase revokeToken threw (e.g. Apple key not configured in Firebase)
   | "unknown";
 
 export interface AuthFailure {
@@ -79,6 +82,10 @@ export const AUTH_FAILURE_COPY: Record<AuthFailureType, string | null> = {
   // an error message here would be wrong.
   "profile-timeout": null,
   "profile-failed": null,
+  // Revocation never blocks account deletion (blocking it would break Guideline
+  // 5.1.1(v) itself), so there's nothing to tell the user — Sentry gets it.
+  "revoke-canceled": null,
+  "revoke-failed": null,
   unknown: "No se pudo iniciar sesión. Intenta de nuevo.",
 };
 

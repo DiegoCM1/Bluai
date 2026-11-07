@@ -55,9 +55,6 @@ export default function SOSContactsScreen() {
   const [formError, setFormError]           = useState<string | null>(null);
   const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(null);
   const [pendingContactAdded, setPendingContactAdded] = useState<string | null>(null);
-  const [pickerVisible, setPickerVisible] = useState(false);
-  const [phoneContacts, setPhoneContacts] = useState<ExpoContacts.Contact[]>([]);
-  const [contactSearch, setContactSearch] = useState("");
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [whoHasMe, setWhoHasMe]             = useState<WhoHasMeItem[]>([]);
   const [addingReciprocal, setAddingReciprocal] = useState<number | null>(null);
@@ -202,63 +199,47 @@ export default function SOSContactsScreen() {
   }
 
   async function pickFromContacts() {
-    // iOS: Apple's own picker. Our picker below is a second <Modal> opened over the
-    // open "Nuevo contacto" <Modal>, and iOS can't present a modal over another —
-    // so on iPhone the list never appeared. The native picker presents over
-    // whatever is on top, and needs no contacts permission (iOS hands us only the
-    // contact the user taps). Android keeps the custom flow, which works there.
-    if (Platform.OS === "ios") {
-      console.log('[QA_SOS] pickFromContacts → native iOS picker');
-      try {
-        const contact = await ExpoContacts.presentContactPickerAsync();
-        if (!contact) {
-          console.log('[QA_SOS] native picker canceled');
-          return;
+    // The OS's own contact picker on both platforms. Ours was a second <Modal> over
+    // the open "Nuevo contacto" <Modal>: iOS can't present a modal over another (the
+    // list never appeared), and on Android a short "no results" list slid behind the
+    // keyboard. The native pickers have neither problem, plus the OS's own search.
+    //
+    // iOS needs no contacts permission (it hands us only the tapped contact).
+    // Android does: expo-contacts reads the picked contact back from the contacts DB.
+    if (Platform.OS === "android") {
+      const { status, canAskAgain } = await ExpoContacts.requestPermissionsAsync();
+      console.log('[QA_SOS] contacts permission result | status:', status, '| canAskAgain:', canAskAgain);
+      if (status !== "granted") {
+        if (!canAskAgain) {
+          Alert.alert(
+            "Acceso a contactos",
+            "Bluai necesita acceso a tus contactos para agregar contactos SOS fácilmente. Habilítalo en Configuración.",
+            [
+              { text: "Cancelar", style: "cancel" },
+              { text: "Abrir Configuración", onPress: () => Linking.openSettings() },
+            ]
+          );
         }
-        if (!contact.phoneNumbers?.length) {
-          Alert.alert("Sin teléfono", "Ese contacto no tiene número de teléfono. Elige otro o escríbelo a mano.");
-          return;
-        }
-        selectPhoneContact(contact);
-      } catch (err) {
-        console.log('[QA_SOS] native picker error:', err);
-        Alert.alert("Error", "No se pudieron abrir tus contactos. Escribe el contacto a mano.");
+        return;
       }
-      return;
     }
 
-    console.log('[QA_SOS] pickFromContacts → requesting permission');
-    const { status, canAskAgain } = await ExpoContacts.requestPermissionsAsync();
-    console.log('[QA_SOS] contacts permission result | status:', status, '| canAskAgain:', canAskAgain);
-    if (status !== "granted") {
-      if (!canAskAgain) {
-        console.log('[QA_SOS] permission permanently denied → showing Settings alert');
-        Alert.alert(
-          "Acceso a contactos",
-          "Bluai necesita acceso a tus contactos para agregar contactos SOS fácilmente. Habilítalo en Configuración.",
-          [
-            { text: "Cancelar", style: "cancel" },
-            { text: "Abrir Configuración", onPress: () => { console.log('[QA_SOS] user tapped Abrir Configuración'); Linking.openSettings(); } },
-          ]
-        );
-      } else {
-        console.log('[QA_SOS] permission denied by user (canAskAgain=true) → silent return');
-      }
-      return;
-    }
+    console.log('[QA_SOS] pickFromContacts → native picker');
     setLoadingContacts(true);
     try {
-      const { data } = await ExpoContacts.getContactsAsync({
-        fields: [ExpoContacts.Fields.PhoneNumbers, ExpoContacts.Fields.Name],
-      });
-      const withPhone = data.filter(c => c.phoneNumbers && c.phoneNumbers.length > 0);
-      console.log('[QA_SOS] phone contacts loaded:', withPhone.length, 'with phone numbers');
-      setPhoneContacts(withPhone);
-      setContactSearch("");
-      setPickerVisible(true);
+      const contact = await ExpoContacts.presentContactPickerAsync();
+      if (!contact) {
+        console.log('[QA_SOS] native picker canceled');
+        return;
+      }
+      if (!contact.phoneNumbers?.length) {
+        Alert.alert("Sin teléfono", "Ese contacto no tiene número de teléfono. Elige otro o escríbelo a mano.");
+        return;
+      }
+      selectPhoneContact(contact);
     } catch (err) {
-      console.log('[QA_SOS] getContactsAsync error:', err);
-      Alert.alert("Error", "No se pudieron cargar los contactos. Intenta de nuevo.");
+      console.log('[QA_SOS] native picker error:', err);
+      Alert.alert("Error", "No se pudieron abrir tus contactos. Escribe el contacto a mano.");
     } finally {
       setLoadingContacts(false);
     }
@@ -277,7 +258,6 @@ export default function SOSContactsScreen() {
     console.log('[QA_SOS] contact selected from picker'); // name/phone deliberately not logged — PII
     setNameVal(fullName);
     setPhoneVal(phone);
-    setPickerVisible(false);
     setFormError(null);
   }
 
@@ -647,61 +627,6 @@ export default function SOSContactsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-      {/* Contact picker modal */}
-      <Modal visible={pickerVisible} animationType="slide" transparent onRequestClose={() => setPickerVisible(false)}>
-        <View style={s.overlay}>
-          <View style={[s.modalCard, { flex: 0, maxHeight: "80%" }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
-              <Text style={[s.modalTitle, { flex: 1, marginBottom: 0 }]}>Seleccionar contacto</Text>
-              <TouchableOpacity onPress={() => setPickerVisible(false)} hitSlop={10}>
-                <MaterialCommunityIcons name="close" size={22} color="rgba(255,255,255,0.6)" />
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={[s.input, { marginBottom: 8 }]}
-              placeholder="Buscar por nombre o teléfono…"
-              placeholderTextColor="rgba(255,255,255,0.3)"
-              value={contactSearch}
-              onChangeText={setContactSearch}
-              autoFocus
-              clearButtonMode="while-editing"
-            />
-
-            <FlatList
-              data={phoneContacts.filter(c => {
-                const q = contactSearch.toLowerCase();
-                if (!q) return true;
-                return (c.name ?? "").toLowerCase().includes(q) ||
-                  c.phoneNumbers?.some(p => p.number?.includes(q));
-              })}
-              keyExtractor={(_, i) => String(i)}
-              keyboardShouldPersistTaps="handled"
-              style={{ maxHeight: 400 }}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={s.pickerRow}
-                  onPress={() => selectPhoneContact(item)}
-                  activeOpacity={0.7}
-                >
-                  <MaterialCommunityIcons name="account-outline" size={22} color={colors.brandCyan} style={{ marginRight: 10 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.pickerName}>{item.name || "Sin nombre"}</Text>
-                    {item.phoneNumbers?.slice(0, 2).map((p, i) => (
-                      <Text key={i} style={s.pickerPhone}>{p.number}</Text>
-                    ))}
-                  </View>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                <Text style={[s.bodyText, { textAlign: "center", marginTop: 20 }]}>
-                  {contactSearch ? "Sin resultados" : "No hay contactos con teléfono"}
-                </Text>
-              }
-            />
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -756,10 +681,6 @@ const s = StyleSheet.create({
                       borderWidth: 1, borderColor: colors.brandCyan, borderRadius: 10,
                       paddingVertical: 10, paddingHorizontal: 14, marginBottom: 16, gap: 8 },
   importButtonText: { color: colors.brandCyan, fontFamily: fonts.poppinsSemiBold, fontSize: 14 },
-  pickerRow:        { flexDirection: "row", alignItems: "center", paddingVertical: 12,
-                      borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.07)" },
-  pickerName:       { color: "white", fontFamily: fonts.poppinsSemiBold, fontSize: 14 },
-  pickerPhone:      { color: "rgba(255,255,255,0.5)", fontFamily: fonts.poppins, fontSize: 13, marginTop: 1 },
   chipsRow:         { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
   chip:             { borderWidth: 1, borderColor: "rgba(255,255,255,0.25)", borderRadius: 20,
                       paddingVertical: 7, paddingHorizontal: 14 },

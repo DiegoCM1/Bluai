@@ -19,7 +19,47 @@ async def list_sos_contacts(db: AsyncSession, user_id: int) -> list[dict]:
     return [dict(row) for row in result.mappings().all()]
 
 
+async def _ensure_phone_not_taken(
+    db: AsyncSession, user_id: int, phone: str, exclude_contact_id: int = -1,
+) -> None:
+    """409 if this user already has a contact with the same number.
+
+    Same rule as invite matching (`sos_invite/service.py`): the last 10 digits, so
+    "+52 999 123 4567", "999-123-4567" and "9991234567" are one person. Numbers under
+    10 digits compare in full. Without this, one contact could be added repeatedly —
+    the SOS result would read "Ana, Ana" and Ana could be pushed twice.
+    """
+    result = await db.execute(
+        text("""
+            SELECT name FROM sos_contacts
+            WHERE user_id = :user_id
+              AND id <> :exclude_id
+              AND CASE
+                    WHEN length(regexp_replace(phone, '[^0-9]', '', 'g')) >= 10
+                     AND length(regexp_replace(:phone, '[^0-9]', '', 'g')) >= 10
+                    THEN right(regexp_replace(phone, '[^0-9]', '', 'g'), 10)
+                       = right(regexp_replace(:phone, '[^0-9]', '', 'g'), 10)
+                    ELSE regexp_replace(phone, '[^0-9]', '', 'g')
+                       = regexp_replace(:phone, '[^0-9]', '', 'g')
+                  END
+            LIMIT 1
+        """),
+        {"user_id": user_id, "phone": phone, "exclude_id": exclude_contact_id},
+    )
+    existing = result.scalar()
+    if existing is not None:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "duplicate_phone",
+                "existing_name": existing,
+                "message": f"Ya tienes a {existing} con ese número.",
+            },
+        )
+
+
 async def create_sos_contact(db: AsyncSession, user_id: int, payload: SOSContactCreate) -> dict:
+    await _ensure_phone_not_taken(db, user_id, payload.phone.strip())
     result = await db.execute(
         text("""
             INSERT INTO sos_contacts (user_id, name, phone, relationship)
@@ -47,6 +87,7 @@ async def update_sos_contact(db: AsyncSession, contact_id: int, user_id: int, pa
         updates["name"] = updates["name"].strip()
     if "phone" in updates:
         updates["phone"] = updates["phone"].strip()
+        await _ensure_phone_not_taken(db, user_id, updates["phone"], exclude_contact_id=contact_id)
     if "relationship" in updates:
         updates["relationship"] = updates["relationship"].strip() if updates["relationship"] else None
 

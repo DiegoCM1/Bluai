@@ -22,6 +22,9 @@ DEEP_LINK_BASE = "blueye://sos-invite"
 # not a one-line patch.
 
 
+_RESEND_COOLDOWN = "10 minutes"
+
+
 async def create_invite(
     db: AsyncSession,
     inviter_id: int,
@@ -52,6 +55,24 @@ async def create_invite(
         raise HTTPException(status_code=403, detail="SOS contact does not belong to this user")
     if row["link_status"] == "linked":
         raise HTTPException(status_code=409, detail="Contact is already linked to an app user")
+
+    # Re-sending is allowed (invites expire in 72h), but each one regenerates the link
+    # and can push the invitee again — so not more than once per cooldown.
+    recent = await db.execute(
+        text(f"""
+            SELECT 1 FROM sos_invitations
+            WHERE contact_id = :contact_id
+              AND accepted_at IS NULL
+              AND revoked_at IS NULL
+              AND created_at > NOW() - INTERVAL '{_RESEND_COOLDOWN}'
+        """),
+        {"contact_id": contact_id},
+    )
+    if recent.scalar() is not None:
+        raise HTTPException(
+            status_code=429,
+            detail="Ya enviaste esta invitación hace poco. Espera unos minutos para reenviarla.",
+        )
 
     token = secrets.token_urlsafe(32)
     result = await db.execute(

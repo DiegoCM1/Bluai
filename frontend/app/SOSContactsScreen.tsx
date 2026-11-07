@@ -286,6 +286,13 @@ export default function SOSContactsScreen() {
     try {
       const res = await authFetch(url, { method, body: JSON.stringify(body) });
       console.log('[QA_SOS] save response status:', res.status);
+      // Duplicate number: a validation answer, not a failure — keep the form open with
+      // the reason. (The catch below assumes a network error and refetches/closes.)
+      if (res.status === 409) {
+        const body = await res.json().catch(() => null);
+        setFormError(body?.detail?.message ?? "Ya tienes un contacto con ese número.");
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       const saved: SOSContact = await res.json();
       console.log('[QA_SOS] contact saved:', JSON.stringify({ id: saved.id, link_status: saved.link_status })); // name deliberately not logged — PII
@@ -351,11 +358,30 @@ export default function SOSContactsScreen() {
     }
   }
 
+  function confirmInvite(c: SOSContact) {
+    // A first invite goes straight out; a resend asks first, since it pushes the
+    // invitee again (the backend also enforces a 10-minute cooldown).
+    if (c.link_status !== "invite_sent") return handleInvite(c);
+    Alert.alert(
+      "Reenviar invitación",
+      `Ya invitaste a ${c.name}. ¿Quieres reenviarle la invitación?`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Reenviar", onPress: () => handleInvite(c) },
+      ],
+    );
+  }
+
   async function handleInvite(c: SOSContact) {
     console.log('[QA_SOS] sending invite for contact id:', c.id); // name deliberately not logged — PII
     try {
       const res = await authFetch(`${API_BASE_URL}/api/v1/sos-contacts/${c.id}/invite`, { method: "POST" });
       console.log('[QA_SOS] invite response status:', res.status);
+      if (res.status === 429) {
+        const body = await res.json().catch(() => null);
+        Alert.alert("Espera un momento", body?.detail ?? "Ya enviaste esta invitación hace poco.");
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       const { share_url, push_sent } = await res.json();
       console.log('[QA_SOS] invite result | push_sent:', push_sent); // share_url deliberately not logged — equivalent to a bearer token
@@ -513,7 +539,7 @@ export default function SOSContactsScreen() {
                 </View>
                 <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
                   {item.link_status !== "linked" && (
-                    <Pressable onPress={() => handleInvite(item)} hitSlop={8}
+                    <Pressable onPress={() => confirmInvite(item)} hitSlop={8}
                       accessibilityLabel={item.link_status === "invite_sent" ? "Reenviar invitación" : "Invitar"}>
                       <MaterialCommunityIcons
                         name={item.link_status === "invite_sent" ? "email-sync-outline" : "share-outline"}

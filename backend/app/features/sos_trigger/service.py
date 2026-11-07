@@ -6,6 +6,7 @@ from firebase_admin import messaging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.features.users.service import FALLBACK_PUBLIC_NAME
 from app.features.notifications.service import get_tokens_for_users, _send_multicast_with_retry, build_apns_config, summarize_push_failures
 
 logger = logging.getLogger(__name__)
@@ -55,30 +56,38 @@ async def trigger_sos(
     )
     sender_phone: str = phone_row.scalar() or ""
 
-    # 3. Linked contacts
+    # 3. ALL of the sender's contacts. Only linked ones can receive the push, but the
+    #    rest are read too so the response can say exactly who did NOT get the alert.
     contacts_result = await db.execute(
         text("""
-            SELECT linked_user_id FROM sos_contacts
+            SELECT name, link_status, linked_user_id FROM sos_contacts
             WHERE user_id = :sender_id
-              AND link_status = 'linked'
-              AND linked_user_id IS NOT NULL
+            ORDER BY created_at, id
         """),
         {"sender_id": sender_id},
     )
-    linked_user_ids: list[int] = [int(row[0]) for row in contacts_result.fetchall()]
+    contacts = [dict(row) for row in contacts_result.mappings()]
+    linked_user_ids: list[int] = sorted({
+        int(c["linked_user_id"]) for c in contacts
+        if c["link_status"] == "linked" and c["linked_user_id"] is not None
+    })
 
-    notified_count = 0
+    token_map: dict[int, list[str]] = {}
+    notified_user_ids: set[int] = set()
     skipped_count = 0
 
     if linked_user_ids:
-        # 4. Device tokens
+        # 4. Device tokens. `token_owners[i]` is the user behind `all_tokens[i]` — the
+        #    multicast response is index-aligned with the tokens sent, which is how a
+        #    per-device result becomes a per-contact one.
         token_map = await get_tokens_for_users(db, linked_user_ids)
+        token_owners = [uid for uid, tokens in token_map.items() for _ in tokens]
         all_tokens = [t for tokens in token_map.values() for t in tokens]
         skipped_count = len([uid for uid in linked_user_ids if uid not in token_map])
 
         # 5. Firebase push
         if all_tokens:
-            display_name = sender_display_name or "Un usuario de BluEye"
+            display_name = sender_display_name or FALLBACK_PUBLIC_NAME
             msg = messaging.MulticastMessage(
                 notification=messaging.Notification(
                     title=f"🆘 SOS — {display_name}",
@@ -106,7 +115,10 @@ async def trigger_sos(
             )
             try:
                 response = await _send_multicast_with_retry(msg)
-                notified_count = response.success_count
+                # A contact counts as notified if ANY of their devices accepted it.
+                notified_user_ids = {
+                    token_owners[i] for i, r in enumerate(response.responses) if r.success
+                }
                 logger.info(
                     "SOS push → sender_id=%d contacts=%d tokens=%d success=%d failure=%d",
                     sender_id, len(linked_user_ids), len(all_tokens),
@@ -118,9 +130,12 @@ async def trigger_sos(
                         sender_id, summarize_push_failures(response),
                     )
             except Exception as exc:
-                # Firebase failed after retries — notified_count stays 0.
+                # Firebase failed after retries — nobody counts as notified.
                 # Rate limit is consumed by design (see comment at step 5).
                 logger.error("SOS Firebase push failed after retries sender_id=%d: %s", sender_id, exc, exc_info=True)
+
+    # People, not devices: a contact with two phones is one person notified.
+    notified_count = len(notified_user_ids)
 
     # 5. Log event (always — rate limit applies even to failed pushes)
     event_result = await db.execute(
@@ -143,4 +158,26 @@ async def trigger_sos(
         "notified_count": notified_count,
         "skipped_count":  skipped_count,
         "sos_event_id":   sos_event_id,
+        "contacts": [
+            {"name": c["name"], "status": _contact_status(c, token_map, notified_user_ids)}
+            for c in contacts
+        ],
     }
+
+
+def _contact_status(
+    contact: dict,
+    token_map: dict[int, list[str]],
+    notified_user_ids: set[int],
+) -> str:
+    """Why this contact did or didn't get the SOS — see `SOSContactStatus`."""
+    if contact["link_status"] == "linked" and contact["linked_user_id"] is not None:
+        uid = int(contact["linked_user_id"])
+        if uid in notified_user_ids:
+            return "notified"
+        if uid not in token_map:
+            return "no_device"
+        return "failed"
+    if contact["link_status"] == "invite_sent":
+        return "invite_pending"
+    return "not_linked"

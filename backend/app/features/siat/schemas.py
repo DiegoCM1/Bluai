@@ -46,7 +46,7 @@ class InjectCycloneResponse(RunCycleResponse):
 class InjectSMNAlertRequest(BaseModel):
     level: int = Field(default=3, ge=1, le=5)
     title: str = "SMN: Alerta Meteorológica de Prueba [TEST]"
-    short: str = "Alerta de prueba generada por el equipo BluEye. No es una alerta real."
+    short: str = "Alerta de prueba generada por el equipo Bluai. No es una alerta real."
 
 
 class InjectSMNAlertResponse(BaseModel):

@@ -80,33 +80,172 @@ def test_trigger_user_not_found():
     assert r.status_code == 404
 
 
+# ── trigger_sos unit tests ────────────────────────────────────────────────────
+# trigger_sos runs its queries in this order: rate limit → sender phone → contacts →
+# device tokens (only if anyone is linked) → INSERT sos_events. The mock DB answers
+# them in that same order.
+
+def _scalar(value):
+    m = MagicMock()
+    m.scalar.return_value = value
+    return m
+
+
+def _rows(rows):
+    m = MagicMock()
+    m.mappings.return_value = rows
+    return m
+
+
+def _contact(name, link_status, linked_user_id=None):
+    return {"name": name, "link_status": link_status, "linked_user_id": linked_user_id}
+
+
+def _db(contacts, tokens=None, event_id=7):
+    """Mock session answering trigger_sos's queries in order."""
+    db = AsyncMock()
+    answers = [_scalar(0), _scalar("+520000000000"), _rows(contacts)]
+    if any(c["link_status"] == "linked" and c["linked_user_id"] for c in contacts):
+        answers.append(_rows(tokens or []))
+    answers.append(_scalar(event_id))
+    db.execute.side_effect = answers
+    db.commit = AsyncMock()
+    return db
+
+
+def _batch(*successes):
+    """A Firebase BatchResponse whose responses[i].success follows `successes`."""
+    resp = MagicMock()
+    resp.responses = [MagicMock(success=ok) for ok in successes]
+    resp.success_count = sum(successes)
+    resp.failure_count = len(successes) - sum(successes)
+    return resp
+
+
+def _send(rv=None, exc=None):
+    return patch(
+        "app.features.sos_trigger.service._send_multicast_with_retry",
+        new_callable=AsyncMock, return_value=rv, side_effect=exc,
+    )
+
+
 @pytest.mark.asyncio
 async def test_trigger_sos_firebase_failure_notified_zero():
     """Si Firebase falla después de retries, trigger_sos registra el evento con notified_count=0 (diseño intencional)."""
-    mock_db = AsyncMock()
+    db = _db([_contact("Ana", "linked", 99)], tokens=[{"user_id": 99, "token": "tok1"}])
 
-    rate_mock = MagicMock()
-    rate_mock.scalar.return_value = 0
-
-    contacts_mock = MagicMock()
-    contacts_mock.fetchall.return_value = [(99,)]
-
-    tokens_mock = MagicMock()
-    tokens_mock.mappings.return_value = [{"user_id": 99, "token": "tok1"}]
-
-    event_mock = MagicMock()
-    event_mock.scalar.return_value = 7
-
-    mock_db.execute.side_effect = [rate_mock, contacts_mock, tokens_mock, event_mock]
-    mock_db.commit = AsyncMock()
-
-    with patch(
-        "app.features.sos_trigger.service._send_multicast_with_retry",
-        new_callable=AsyncMock,
-        side_effect=RuntimeError("Firebase down"),
-    ):
-        result = await trigger_sos(mock_db, sender_id=1, sender_display_name="Boro", lat=20.0, lon=-90.0)
+    with _send(exc=RuntimeError("Firebase down")):
+        result = await trigger_sos(db, sender_id=1, sender_display_name="Boro", lat=20.0, lon=-90.0)
 
     assert result["notified_count"] == 0
     assert result["sos_event_id"] == 7
-    mock_db.commit.assert_awaited_once()
+    assert result["contacts"] == [{"name": "Ana", "status": "failed"}]
+    db.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_trigger_sos_reports_every_contact_status():
+    """Cada contacto vuelve con el motivo exacto: el remitente sabe quién recibió y quién no."""
+    contacts = [
+        _contact("Ana", "linked", 10),          # 1 device, delivered
+        _contact("Luis", "linked", 11),         # 2 devices, only the 2nd delivered
+        _contact("Marta", "linked", 12),        # no registered device
+        _contact("Pedro", "invite_sent"),
+        _contact("Juan", "unlinked"),
+    ]
+    tokens = [
+        {"user_id": 10, "token": "ana-1"},
+        {"user_id": 11, "token": "luis-1"},
+        {"user_id": 11, "token": "luis-2"},
+    ]
+    db = _db(contacts, tokens=tokens)
+
+    with _send(rv=_batch(True, False, True)):
+        result = await trigger_sos(db, sender_id=1, sender_display_name="Boro", lat=None, lon=None)
+
+    assert result["contacts"] == [
+        {"name": "Ana", "status": "notified"},
+        {"name": "Luis", "status": "notified"},
+        {"name": "Marta", "status": "no_device"},
+        {"name": "Pedro", "status": "invite_pending"},
+        {"name": "Juan", "status": "not_linked"},
+    ]
+    # People, not devices: Luis's two phones count once.
+    assert result["notified_count"] == 2
+    assert result["skipped_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_trigger_sos_linked_contact_all_devices_fail():
+    db = _db([_contact("Ana", "linked", 10)], tokens=[{"user_id": 10, "token": "ana-1"}])
+
+    with _send(rv=_batch(False)):
+        result = await trigger_sos(db, sender_id=1, sender_display_name="Boro", lat=None, lon=None)
+
+    assert result["notified_count"] == 0
+    assert result["contacts"] == [{"name": "Ana", "status": "failed"}]
+
+
+@pytest.mark.asyncio
+async def test_trigger_sos_nobody_linked_sends_no_push():
+    """Sin contactos vinculados no hay push que mandar, pero sí se reporta a cada contacto."""
+    db = _db([_contact("Pedro", "invite_sent"), _contact("Juan", "unlinked")])
+
+    with _send() as send:
+        result = await trigger_sos(db, sender_id=1, sender_display_name="Boro", lat=None, lon=None)
+
+    send.assert_not_awaited()
+    assert result["notified_count"] == 0
+    assert result["contacts"] == [
+        {"name": "Pedro", "status": "invite_pending"},
+        {"name": "Juan", "status": "not_linked"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_trigger_sos_no_contacts_at_all():
+    db = _db([])
+
+    with _send() as send:
+        result = await trigger_sos(db, sender_id=1, sender_display_name="Boro", lat=None, lon=None)
+
+    send.assert_not_awaited()
+    assert result["contacts"] == []
+    assert result["notified_count"] == 0
+    db.commit.assert_awaited_once()
+
+
+def test_trigger_200_returns_contacts():
+    payload = {**TRIGGER_OK, "contacts": [{"name": "Ana", "status": "notified"}]}
+    with _mock_auth(), _mock_user(), _mock_svc(rv=payload):
+        r = client.post("/api/v1/sos/trigger", json={}, headers=AUTH_HEADERS)
+    assert r.status_code == 200
+    assert r.json()["contacts"] == [{"name": "Ana", "status": "notified"}]
+
+
+# ── Sender name shown to contacts ─────────────────────────────────────────────
+
+from app.features.users.service import public_display_name
+
+
+def test_public_display_name_prefers_onboarding_name():
+    row = {"first_name": "Ana", "last_name": "López", "display_name": "ana.l"}
+    assert public_display_name(row, "Token Name") == "Ana López"
+
+
+def test_public_display_name_apple_user_without_token_name():
+    """Sign in with Apple: no `name` claim — the onboarding name must still win."""
+    assert public_display_name({"first_name": "Ana", "last_name": None}, None) == "Ana"
+
+
+def test_public_display_name_falls_back_in_order():
+    assert public_display_name({"display_name": "Ana L"}, "Tok") == "Ana L"
+    assert public_display_name({"first_name": "  ", "display_name": None}, "Tok") == "Tok"
+    assert public_display_name({}, None) == "Un usuario de Bluai"
+
+
+def test_trigger_sends_onboarding_name_not_token_name():
+    db_user = {**FAKE_DB_USER, "first_name": "Ana", "last_name": "López"}
+    with _mock_auth(), _mock_user(rv=db_user), _mock_svc(rv=TRIGGER_OK) as svc:
+        client.post("/api/v1/sos/trigger", json={}, headers=AUTH_HEADERS)
+    assert svc.await_args.kwargs["sender_display_name"] == "Ana López"

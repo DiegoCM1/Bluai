@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.features.users.service import get_user_by_firebase_uid
+from app.features.users.service import get_user_by_firebase_uid, public_display_name
 from app.features.sos_trigger.schemas import SOSTriggerRequest, SOSTriggerResponse
 from app.features.sos_trigger.service import trigger_sos
 
@@ -25,7 +25,7 @@ async def sos_trigger_route(
     return await trigger_sos(
         db,
         sender_id=int(db_user["id"]),
-        sender_display_name=user.get("name", ""),
+        sender_display_name=public_display_name(db_user, user.get("name")),
         lat=body.lat,
         lon=body.lon,
     )

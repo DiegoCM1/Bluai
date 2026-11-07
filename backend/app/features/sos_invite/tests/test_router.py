@@ -1,3 +1,4 @@
+import pytest
 from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
@@ -154,3 +155,26 @@ def test_accept_400_self_invite():
                    exc=HTTPException(400, "Cannot accept your own invitation")):
         assert client.post("/api/v1/sos-invitations/self/accept",
                            headers=AUTH_HEADERS).status_code == 400
+
+
+# ── Resend cooldown (service level) ───────────────────────────────────────────
+
+from unittest.mock import MagicMock as _MagicMock
+from app.features.sos_invite.service import create_invite
+
+
+@pytest.mark.asyncio
+async def test_create_invite_429_within_cooldown():
+    db = AsyncMock()
+    contact = _MagicMock()
+    contact.mappings.return_value.first.return_value = {
+        "name": "Ana", "link_status": "invite_sent", "user_id": 42,
+        "phone": "9991234567", "invitee_user_id": None,
+    }
+    recent = _MagicMock()
+    recent.scalar.return_value = 1  # an invite was created < 10 min ago
+    db.execute.side_effect = [contact, recent]
+    with pytest.raises(HTTPException) as exc:
+        await create_invite(db, inviter_id=42, inviter_display_name="Boro", contact_id=5)
+    assert exc.value.status_code == 429
+    db.commit.assert_not_called()

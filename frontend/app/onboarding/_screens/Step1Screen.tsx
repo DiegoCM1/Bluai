@@ -9,6 +9,7 @@ import { FormDropdown } from '../_components/FormDropdown';
 import { useOnboarding } from '../_context/OnboardingContext';
 import { validateStep1 } from '../_validation';
 import { MEXICO_STATES } from '../_types';
+import { matchMexicoState } from '../_utils/matchMexicoState';
 import { track } from '../../../utils/analytics';
 import { syncLocationToBackend } from '../../../utils/locationSync';
 import { colors } from '../../../utils/theme';
@@ -78,11 +79,13 @@ export const Step1Screen: React.FC = () => {
       if (address) {
         const updates: any = {};
 
-        // Only accept a region that is actually in the list. Outside Mexico (App
-        // Review tests from the US) the region would be an unselectable value.
-        const region = address.region ?? '';
-        if ((MEXICO_STATES as readonly string[]).includes(region)) {
-          updates.state = region;
+        // iOS reports states as abbreviations or long official names ("Yuc.",
+        // "Veracruz de Ignacio de la Llave"); outside Mexico it maps to "Fuera de
+        // México". Only a value that's actually in the list is ever set.
+        const matchedState = matchMexicoState(address);
+        console.log('[Onboarding] location → region:', address.region, '| country:', address.isoCountryCode, '| matched:', matchedState);
+        if (matchedState) {
+          updates.state = matchedState;
           setStateHint(null);
         } else {
           setStateHint('Bluai cubre estados de México. Selecciona el más cercano o "Fuera de México".');

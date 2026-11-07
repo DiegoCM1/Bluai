@@ -202,6 +202,31 @@ export default function SOSContactsScreen() {
   }
 
   async function pickFromContacts() {
+    // iOS: Apple's own picker. Our picker below is a second <Modal> opened over the
+    // open "Nuevo contacto" <Modal>, and iOS can't present a modal over another —
+    // so on iPhone the list never appeared. The native picker presents over
+    // whatever is on top, and needs no contacts permission (iOS hands us only the
+    // contact the user taps). Android keeps the custom flow, which works there.
+    if (Platform.OS === "ios") {
+      console.log('[QA_SOS] pickFromContacts → native iOS picker');
+      try {
+        const contact = await ExpoContacts.presentContactPickerAsync();
+        if (!contact) {
+          console.log('[QA_SOS] native picker canceled');
+          return;
+        }
+        if (!contact.phoneNumbers?.length) {
+          Alert.alert("Sin teléfono", "Ese contacto no tiene número de teléfono. Elige otro o escríbelo a mano.");
+          return;
+        }
+        selectPhoneContact(contact);
+      } catch (err) {
+        console.log('[QA_SOS] native picker error:', err);
+        Alert.alert("Error", "No se pudieron abrir tus contactos. Escribe el contacto a mano.");
+      }
+      return;
+    }
+
     console.log('[QA_SOS] pickFromContacts → requesting permission');
     const { status, canAskAgain } = await ExpoContacts.requestPermissionsAsync();
     console.log('[QA_SOS] contacts permission result | status:', status, '| canAskAgain:', canAskAgain);

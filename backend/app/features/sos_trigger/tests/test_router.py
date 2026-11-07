@@ -221,3 +221,31 @@ def test_trigger_200_returns_contacts():
         r = client.post("/api/v1/sos/trigger", json={}, headers=AUTH_HEADERS)
     assert r.status_code == 200
     assert r.json()["contacts"] == [{"name": "Ana", "status": "notified"}]
+
+
+# ── Sender name shown to contacts ─────────────────────────────────────────────
+
+from app.features.users.service import public_display_name
+
+
+def test_public_display_name_prefers_onboarding_name():
+    row = {"first_name": "Ana", "last_name": "López", "display_name": "ana.l"}
+    assert public_display_name(row, "Token Name") == "Ana López"
+
+
+def test_public_display_name_apple_user_without_token_name():
+    """Sign in with Apple: no `name` claim — the onboarding name must still win."""
+    assert public_display_name({"first_name": "Ana", "last_name": None}, None) == "Ana"
+
+
+def test_public_display_name_falls_back_in_order():
+    assert public_display_name({"display_name": "Ana L"}, "Tok") == "Ana L"
+    assert public_display_name({"first_name": "  ", "display_name": None}, "Tok") == "Tok"
+    assert public_display_name({}, None) == "Un usuario de Bluai"
+
+
+def test_trigger_sends_onboarding_name_not_token_name():
+    db_user = {**FAKE_DB_USER, "first_name": "Ana", "last_name": "López"}
+    with _mock_auth(), _mock_user(rv=db_user), _mock_svc(rv=TRIGGER_OK) as svc:
+        client.post("/api/v1/sos/trigger", json={}, headers=AUTH_HEADERS)
+    assert svc.await_args.kwargs["sender_display_name"] == "Ana López"

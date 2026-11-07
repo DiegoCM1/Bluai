@@ -281,9 +281,12 @@ export default function SOSContactsScreen() {
       console.log('[QA_SOS] validation failed: name or phone empty');
       return setFormError("Nombre y teléfono son obligatorios.");
     }
-    if (p.length < 5) {
-      console.log('[QA_SOS] validation failed: phone too short');
-      return setFormError("El teléfono debe tener al menos 5 caracteres.");
+    // Count digits only — "+52 (999) 123-4567" is valid as typed. 8–15 is the E.164
+    // range, and covers a Mexican 10-digit number with or without +52.
+    const digits = p.replace(/\D/g, "").length;
+    if (digits < 8 || digits > 15) {
+      console.log('[QA_SOS] validation failed: phone digits out of range:', digits);
+      return setFormError("Ingresa un teléfono válido (8 a 15 dígitos).");
     }
 
     setSaving(true); setFormError(null);

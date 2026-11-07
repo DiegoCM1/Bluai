@@ -6,6 +6,7 @@ from firebase_admin import messaging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.features.users.service import FALLBACK_PUBLIC_NAME
 from app.features.notifications.service import get_tokens_for_users, _send_multicast_with_retry, send_contacts_refresh_push, send_targeted_notification, build_apns_config
 
 logger = logging.getLogger(__name__)
@@ -73,7 +74,7 @@ async def create_invite(
         {
             "token": token,
             "inviter_id": inviter_id,
-            "inviter_display_name": inviter_display_name or "Un usuario de BluEye",
+            "inviter_display_name": inviter_display_name or FALLBACK_PUBLIC_NAME,
             "contact_id": contact_id,
             "contact_name": row["name"],
         },
@@ -93,7 +94,7 @@ async def create_invite(
         push_sent = await _send_invite_push(
             db,
             invitee_user_id=int(invitee_user_id),
-            inviter_display_name=inviter_display_name or "Un usuario de BluEye",
+            inviter_display_name=inviter_display_name or FALLBACK_PUBLIC_NAME,
             contact_name=row["name"],
             invite_token=invite_token,
         )
@@ -120,7 +121,7 @@ async def _send_invite_push(
     msg = messaging.MulticastMessage(
         notification=messaging.Notification(
             title=f"Invitación SOS de {inviter_display_name}",
-            body=f"Te invitan a ser contacto SOS de {inviter_display_name} en BluEye.",
+            body=f"Te invitan a ser contacto SOS de {inviter_display_name} en Bluai.",
         ),
         data={
             "category":             "sos_invite",
@@ -168,7 +169,7 @@ async def get_invite_preview(db: AsyncSession, token: str) -> dict:
     if row["accepted_at"] is not None:
         raise HTTPException(status_code=409, detail="Invitation already accepted")
     return {
-        "inviter_display_name": row["inviter_display_name"] or "Un usuario de BluEye",
+        "inviter_display_name": row["inviter_display_name"] or FALLBACK_PUBLIC_NAME,
         "contact_name": row["contact_name"],
         "expires_at": row["expires_at"],
     }
@@ -216,7 +217,7 @@ async def accept_invite(db: AsyncSession, token: str, caller_user_id: int) -> di
     await send_contacts_refresh_push(db, [int(row["inviter_id"]), caller_user_id])
 
     return {
-        "inviter_display_name": row["inviter_display_name"] or "Un usuario de BluEye",
+        "inviter_display_name": row["inviter_display_name"] or FALLBACK_PUBLIC_NAME,
         "contact_name": row["contact_name"],
     }
 

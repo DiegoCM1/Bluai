@@ -6,6 +6,7 @@ from firebase_admin import messaging
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.features.users.service import FALLBACK_PUBLIC_NAME
 from app.features.notifications.service import get_tokens_for_users, _send_multicast_with_retry, build_apns_config, summarize_push_failures
 
 logger = logging.getLogger(__name__)
@@ -86,7 +87,7 @@ async def trigger_sos(
 
         # 5. Firebase push
         if all_tokens:
-            display_name = sender_display_name or "Un usuario de BluEye"
+            display_name = sender_display_name or FALLBACK_PUBLIC_NAME
             msg = messaging.MulticastMessage(
                 notification=messaging.Notification(
                     title=f"🆘 SOS — {display_name}",

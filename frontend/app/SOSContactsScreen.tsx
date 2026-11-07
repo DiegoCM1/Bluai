@@ -265,7 +265,14 @@ export default function SOSContactsScreen() {
   }
 
   function selectPhoneContact(contact: ExpoContacts.Contact) {
-    const fullName = (contact.name ?? "").trim();
+    // On iOS `name` comes from CNContactFormatter, which can return nothing for a
+    // picker contact even though the parts are there — so fall back field by field.
+    const fullName = [
+      contact.name,
+      [contact.firstName, contact.lastName].filter(Boolean).join(" "),
+      contact.nickname,
+      contact.company,
+    ].map((v) => (v ?? "").trim()).find((v) => v.length > 0) ?? "";
     const phone = (contact.phoneNumbers?.[0]?.number ?? "").replace(/\s/g, "");
     console.log('[QA_SOS] contact selected from picker'); // name/phone deliberately not logged — PII
     setNameVal(fullName);

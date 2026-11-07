@@ -767,7 +767,7 @@ export default function WeatherMapNativewind({
   const handleSOSTrigger = () => {
     Alert.alert(
       "Enviar SOS",
-      "Esto notificará a tus contactos de confianza con tu ubicación actual. ¿Continuar?",
+      "Esto notificará a tus contactos de confianza con tu ubicación actual.\n\nBluai no contacta a servicios de emergencia. Si estás en peligro inmediato, llama al 911.",
       [
         { text: "Cancelar", style: "cancel" },
         { text: "Enviar SOS", style: "destructive", onPress: doSendSOS },

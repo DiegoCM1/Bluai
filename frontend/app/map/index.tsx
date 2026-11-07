@@ -52,6 +52,7 @@ import { authFetch } from "../../utils/api";
 import { API_BASE_URL } from "../../utils/config";
 import * as Network from "expo-network";
 import { useFocusEffect, useRouter } from "expo-router";
+import { showSOSResultAlert } from "./_utils/sosResultAlert";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   enqueueSOS,
@@ -894,19 +895,7 @@ export default function WeatherMapNativewind({
 
       const data = await res.json().catch(() => null);
       setHasPendingSOS(false);
-      if (data?.notified_count === 0) {
-        toast.info("SOS enviado", {
-          description:
-            "No tienes contactos vinculados. Agrégalos en tu perfil.",
-        });
-      } else {
-        toast.success("SOS enviado", {
-          description:
-            data?.notified_count != null
-              ? `${data.notified_count} contacto(s) notificado(s).`
-              : "Tus contactos fueron notificados.",
-        });
-      }
+      showSOSResultAlert(data);
     } catch (error) {
       console.error("[Map] Unexpected SOS failure:", error);
       try {

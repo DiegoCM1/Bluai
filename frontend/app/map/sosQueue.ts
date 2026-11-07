@@ -2,6 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage'
 import { toast } from 'sonner-native'
 import { authFetch } from '../../utils/api'
 import { API_BASE_URL } from '../../utils/config'
+import { showSOSResultAlert } from './_utils/sosResultAlert'
 
 const QUEUE_KEY = '@BluEye:sos_queue'
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
@@ -102,13 +103,8 @@ export async function flushSOSQueue(): Promise<void> {
         }
 
         await removeSOSItem(item.id)
-        const data = await res.json()
-        toast.success('SOS enviado', {
-          description:
-            data.notified_count === 0
-              ? 'No tienes contactos vinculados. Agrégalos en tu perfil.'
-              : `${data.notified_count} contacto(s) notificado(s).`,
-        })
+        const data = await res.json().catch(() => null)
+        showSOSResultAlert(data)
       } catch {
         // Red no disponible → mantener en cola
       }

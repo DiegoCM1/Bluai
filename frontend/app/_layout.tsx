@@ -236,6 +236,20 @@ function AuthGate({ children }) {
   return children
 }
 
+/**
+ * Keep iOS toasts in the normal view tree, like Android.
+ *
+ * By default sonner-native mounts toasts on iOS inside react-native-screens'
+ * FullWindowOverlay — a separate native window above the whole app. Toasts fire right
+ * after sign-in (push-registration failures) and on foreground notifications, which is
+ * exactly when the onboarding footer buttons stopped responding on iOS only (App
+ * Review build 19: "continue button unresponsive"). Rendering inline removes that
+ * window; the only loss is toasts drawing above native modals, which nothing relies on.
+ */
+function InlineToasterOverlay({ children }: { children: React.ReactNode }) {
+  return <>{children}</>;
+}
+
 /* ---------- Layout raíz ---------- */
 export default Sentry.wrap(function Layout() {
   const router = useRouter();
@@ -584,7 +598,7 @@ export default Sentry.wrap(function Layout() {
                       options={{ headerShown: false }}
                     />
                   </Stack>
-                  <Toaster />
+                  <Toaster ToasterOverlayWrapper={InlineToasterOverlay} />
                   </LinearGradient>
                 </ModelProvider>
               </AuthGate>

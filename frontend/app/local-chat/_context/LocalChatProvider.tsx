@@ -30,6 +30,7 @@ import {
   decodeIdentity,
   encodeIdentity,
   newDeviceId,
+  nicknameFromProfile,
 } from "../_services/identity";
 import {
   loadBlockedDeviceIds,
@@ -81,6 +82,8 @@ interface LocalChatValue {
   // identity
   deviceId: string;
   nickname: string;
+  /** Nickname comes from the profile and isn't editable here. */
+  nicknameLocked: boolean;
   needsNickname: boolean;
   setNickname: (nickname: string) => Promise<void>;
 
@@ -132,6 +135,9 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
   const [hydrated, setHydrated] = useState(false);
   const [deviceId, setDeviceId] = useState("");
   const [nickname, setNicknameState] = useState("");
+  // True when the nickname mirrors the profile — the lobby hides "rename",
+  // since a manual edit would be overwritten on the next visit anyway.
+  const [nicknameLocked, setNicknameLocked] = useState(false);
   const [conversations, setConversations] = useState<
     Record<string, Conversation>
   >({});
@@ -193,9 +199,21 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
           loadConversations(),
           loadBlockedDeviceIds(),
         ]);
+        // The profile name always wins, so the chat matches "Mi perfil" —
+        // including over a name typed into the old prompt. The stored value
+        // only survives for accounts with no profile name. Resolved before
+        // `hydrated` flips, so the nickname gate never flashes open.
+        const fromProfile = await nicknameFromProfile();
+        const resolvedNick = fromProfile ?? nick ?? "";
+        if (fromProfile && fromProfile !== nick) {
+          // Non-fatal: a failed write must not sink history hydration; the
+          // name still works this session and is re-derived next launch.
+          await saveNickname(fromProfile).catch(() => {});
+        }
         if (cancelled) return;
         setDeviceId(id);
-        setNicknameState(nick ?? "");
+        setNicknameState(resolvedNick);
+        setNicknameLocked(fromProfile !== null);
         setConversations(convos);
         setBlockedDeviceIds(blocked);
       } catch (e: any) {
@@ -811,6 +829,7 @@ export function LocalChatProvider({ children }: { children: React.ReactNode }) {
     hydrated,
     deviceId,
     nickname,
+    nicknameLocked,
     needsNickname,
     setNickname,
     advertising,

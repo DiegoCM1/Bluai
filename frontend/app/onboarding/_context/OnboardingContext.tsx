@@ -5,7 +5,7 @@ import { getAuth } from '@react-native-firebase/auth';
 import { saveOnboardingData, markProfileSynced } from '../_services/onboardingService';
 import { track } from '../../../utils/analytics';
 import { pushProfile } from '../../../utils/profileSync';
-import { readAppleName } from '../../../features/auth/appleName';
+import { readAccountName } from '../../../features/auth/accountName';
 import { onboardingBreadcrumb, reportOnboardingFailure } from '../_services/onboardingTelemetry';
 
 const initialData: OnboardingData = {
@@ -33,15 +33,9 @@ export const OnboardingProvider: React.FC<{ children: ReactNode }> = ({ children
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const apple = await readAppleName();
-      let givenName = apple?.givenName ?? '';
-      let familyName = apple?.familyName ?? '';
-      if (!givenName && !familyName) {
-        const [first = '', ...rest] = (getAuth().currentUser?.displayName ?? '').trim().split(/\s+/);
-        givenName = first;
-        familyName = rest.join(' ');
-      }
-      if (cancelled || (!givenName && !familyName)) return;
+      const name = await readAccountName();
+      if (cancelled || !name) return;
+      const { givenName, familyName } = name;
       setData(prev => ({
         ...prev,
         firstName: prev.firstName || givenName,

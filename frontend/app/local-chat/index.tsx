@@ -69,10 +69,14 @@ export default function LocalChatLobbyScreen() {
     <SafeAreaView className="flex-1 bg-transparent" edges={["top", "bottom"]}>
       <ScreenHeader title="Chat offline" />
 
-      {/* Identity row */}
+      {/* Identity row — read-only when the name mirrors "Mi perfil" (a manual
+          rename would be overwritten on the next visit). */}
       <Pressable
         onPress={() => setEditing(true)}
-        className="mx-4 mt-2 flex-row items-center justify-between rounded-2xl border border-white/10 bg-brand-surface px-4 py-3 active:opacity-70"
+        disabled={chat.nicknameLocked}
+        className={`mx-4 mt-2 flex-row items-center justify-between rounded-2xl border border-white/10 bg-brand-surface px-4 py-3 ${
+          chat.nicknameLocked ? "" : "active:opacity-70"
+        }`}
       >
         <View className="flex-row items-center gap-2">
           <MaterialCommunityIcons
@@ -87,11 +91,13 @@ export default function LocalChatLobbyScreen() {
             </Text>
           </Text>
         </View>
-        <MaterialCommunityIcons
-          name="pencil"
-          size={18}
-          color="rgba(255,255,255,0.6)"
-        />
+        {chat.nicknameLocked ? null : (
+          <MaterialCommunityIcons
+            name="pencil"
+            size={18}
+            color="rgba(255,255,255,0.6)"
+          />
+        )}
       </Pressable>
 
       <ScrollView

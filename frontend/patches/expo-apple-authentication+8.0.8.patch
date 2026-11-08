@@ -1,0 +1,40 @@
+diff --git a/node_modules/expo-apple-authentication/ios/AppleAuthenticationModule.swift b/node_modules/expo-apple-authentication/ios/AppleAuthenticationModule.swift
+index c977d8f..8d0661f 100644
+--- a/node_modules/expo-apple-authentication/ios/AppleAuthenticationModule.swift
++++ b/node_modules/expo-apple-authentication/ios/AppleAuthenticationModule.swift
+@@ -22,6 +22,9 @@ public final class AppleAuthenticationModule: Module {
+         }
+       }
+     }
++    // Bluai patch: ASAuthorizationController and the window lookup are UIKit — they
++    // must run on the main thread (upstream fix ships in SDK 58, expo/expo#47733).
++    .runOnQueue(.main)
+ 
+     AsyncFunction("getCredentialStateAsync") { (userId: String, promise: Promise) in
+       let appleIdProvider = ASAuthorizationAppleIDProvider()
+diff --git a/node_modules/expo-apple-authentication/ios/AppleAuthenticationRequest.swift b/node_modules/expo-apple-authentication/ios/AppleAuthenticationRequest.swift
+index d933f9c..d9fbb8b 100644
+--- a/node_modules/expo-apple-authentication/ios/AppleAuthenticationRequest.swift
++++ b/node_modules/expo-apple-authentication/ios/AppleAuthenticationRequest.swift
+@@ -81,9 +81,18 @@ final class AppleAuthenticationRequest: NSObject, ASAuthorizationControllerPrese
+   // MARK: - ASAuthorizationControllerPresentationContextProviding
+ 
+   func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+-    guard let window = UIApplication.shared.keyWindow else {
+-      fatalError("Unable to present authentication modal because UIApplication.shared.keyWindow is not available")
++    // Bluai patch: `UIApplication.shared.keyWindow` is deprecated and can be nil on iPadOS,
++    // where the key window belongs to the scene. Resolve it through the active scene and
++    // never `fatalError` — an uncatchable crash is worse than presenting on a bare anchor.
++    let windowScenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
++    let activeScene = windowScenes.first { $0.activationState == .foregroundActive } ?? windowScenes.first
++    if let window = activeScene?.windows.first(where: { $0.isKeyWindow }) ?? activeScene?.windows.first {
++      return window
+     }
+-    return window
++    if let window = UIApplication.shared.windows.first {
++      return window
++    }
++    log.error("Apple authorization: no window available, presenting on a bare anchor")
++    return ASPresentationAnchor()
+   }
+ }

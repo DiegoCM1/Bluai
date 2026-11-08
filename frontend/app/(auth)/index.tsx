@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Platform, View, Text, ImageBackground } from 'react-native'
+import { ActivityIndicator, Alert, Platform, View, Text, ImageBackground } from 'react-native'
 import { SafeAreaView } from 'react-native-safe-area-context'
 import { GoogleSigninButton } from '@react-native-google-signin/google-signin'
 import * as AppleAuthentication from 'expo-apple-authentication'
@@ -16,6 +16,12 @@ export default function LoginScreen() {
       .then(setAppleAvailable)
       .catch(() => setAppleAvailable(false))
   }, [])
+
+  // The inline text alone was easy to miss over the photo — App Review reported a
+  // failed sign-in as "does not action". A native Alert can't be overlooked.
+  useEffect(() => {
+    if (error) Alert.alert('Inicio de sesión', error)
+  }, [error])
 
   if (loading) {
     return (
@@ -37,9 +43,11 @@ export default function LoginScreen() {
 
         <View className="w-full items-center gap-3">
           {error && (
-            <Text className="text-brand-red text-sm text-center font-poppins">
-              {error}
-            </Text>
+            <View className="rounded-lg bg-black/60 px-4 py-2">
+              <Text className="text-brand-red text-base text-center font-poppins">
+                {error}
+              </Text>
+            </View>
           )}
           <View style={{ opacity: signingIn ? 0.5 : 1 }}>
             <GoogleSigninButton
@@ -56,8 +64,16 @@ export default function LoginScreen() {
                 buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
                 cornerRadius={4}
                 style={{ width: 312, height: 48 }}
-                onPress={signingIn ? undefined : signInWithApple}
+                // Always bound: `signInWithApple` guards re-entry itself. Swapping the
+                // handler to `undefined` is what left the button dead when a request hung.
+                onPress={signInWithApple}
               />
+            </View>
+          )}
+          {signingIn && (
+            <View className="flex-row items-center gap-2">
+              <ActivityIndicator color="#FFFFFF" />
+              <Text className="text-white/80 font-poppins text-sm">Iniciando sesión…</Text>
             </View>
           )}
         </View>

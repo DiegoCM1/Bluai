@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Alert, View, Text } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { WizardContainer } from '../_components/WizardContainer';
@@ -10,6 +10,7 @@ import { AGE_RANGES } from '../_types';
 import { track } from '../../../utils/analytics';
 import { useRouter } from 'expo-router';
 import { colors } from '../../../utils/theme';
+import { onboardingBreadcrumb, reportOnboardingFailure } from '../_services/onboardingTelemetry';
 
 export const Step2Screen: React.FC = () => {
   const router = useRouter();
@@ -17,12 +18,19 @@ export const Step2Screen: React.FC = () => {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    onboardingBreadcrumb('step2: mounted');
+  }, []);
+
   const handleBack = () => router.back();
 
   const handleFinish = async () => {
     const validation = validateStep2(data);
+    const invalidFields = Object.keys(validation.errors);
+    onboardingBreadcrumb('step2: finalizar tapped', { valid: validation.isValid, invalidFields });
 
     if (!validation.isValid) {
+      reportOnboardingFailure('validation-blocked', 'step2', { fields: invalidFields }, 'warning');
       setErrors(validation.errors);
       const firstError = Object.values(validation.errors)[0];
       Alert.alert('Error de validación', firstError);

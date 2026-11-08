@@ -18,9 +18,10 @@ import { API_BASE_URL } from "../utils/config";
 import { colors, fonts } from "../utils/theme";
 import { PENDING_SOS_INVITE_KEY } from "./sos-invite/[token]";
 import { PENDING_SOS_CONTACT_ADDED_KEY } from "./_layout";
-import { getSubscription } from "./subscription/_services/subscriptionService";
-import { canAccessFeature, getCurrentPlanSlug } from "./subscription/_utils/planAccess";
-import { PAYMENTS_ENABLED } from "../utils/platformFeatures";
+
+import { useCurrentPlan } from './subscription/_hooks/useCurrentPlan';
+import { canAccessFeature } from "./subscription/_utils/planAccess";
+
 
 interface SOSContact {
   id: number; user_id: number; name: string; phone: string;
@@ -54,32 +55,17 @@ export default function SOSContactsScreen() {
   const [formError, setFormError]           = useState<string | null>(null);
   const [pendingInviteToken, setPendingInviteToken] = useState<string | null>(null);
   const [pendingContactAdded, setPendingContactAdded] = useState<string | null>(null);
-  const [pickerVisible, setPickerVisible] = useState(false);
-  const [phoneContacts, setPhoneContacts] = useState<ExpoContacts.Contact[]>([]);
-  const [contactSearch, setContactSearch] = useState("");
   const [loadingContacts, setLoadingContacts] = useState(false);
   const [whoHasMe, setWhoHasMe]             = useState<WhoHasMeItem[]>([]);
   const [addingReciprocal, setAddingReciprocal] = useState<number | null>(null);
-  const [blockedByPlan, setBlockedByPlan] = useState(false);
+  const currentPlan = useCurrentPlan();
+  const blockedByPlan = !canAccessFeature(currentPlan, 'family_panic');
 
   const fetchAllRef = useRef<() => void>(() => {});
 
-  useEffect(() => {
-    // Skip the call entirely where there is nothing to gate on. `canAccessFeature`
-    // already returns true when payments are off, but that only covers the
-    // resolved path — the .catch below fails CLOSED, so a plain request failure
-    // would still raise a paywall. `/api/v1/payments/*` is not deployed to the
-    // production backend at all (404), so without this guard every user on a
-    // payments-disabled build would be blocked out of SOS contacts by a request
-    // that was always going to fail.
-    if (!PAYMENTS_ENABLED) return;
-    getSubscription()
-      .then((subscription) => {
-        const plan = getCurrentPlanSlug(subscription);
-        setBlockedByPlan(!canAccessFeature(plan, 'family_panic'));
-      })
-      .catch(() => setBlockedByPlan(true));
-  }, []);
+
+
+
 
   // Silent push → instant refresh without waiting for 15s poll
   useEffect(() => {
@@ -213,50 +199,65 @@ export default function SOSContactsScreen() {
   }
 
   async function pickFromContacts() {
-    console.log('[QA_SOS] pickFromContacts → requesting permission');
-    const { status, canAskAgain } = await ExpoContacts.requestPermissionsAsync();
-    console.log('[QA_SOS] contacts permission result | status:', status, '| canAskAgain:', canAskAgain);
-    if (status !== "granted") {
-      if (!canAskAgain) {
-        console.log('[QA_SOS] permission permanently denied → showing Settings alert');
-        Alert.alert(
-          "Acceso a contactos",
-          "Bluai necesita acceso a tus contactos para agregar contactos SOS fácilmente. Habilítalo en Configuración.",
-          [
-            { text: "Cancelar", style: "cancel" },
-            { text: "Abrir Configuración", onPress: () => { console.log('[QA_SOS] user tapped Abrir Configuración'); Linking.openSettings(); } },
-          ]
-        );
-      } else {
-        console.log('[QA_SOS] permission denied by user (canAskAgain=true) → silent return');
+    // The OS's own contact picker on both platforms. Ours was a second <Modal> over
+    // the open "Nuevo contacto" <Modal>: iOS can't present a modal over another (the
+    // list never appeared), and on Android a short "no results" list slid behind the
+    // keyboard. The native pickers have neither problem, plus the OS's own search.
+    //
+    // iOS needs no contacts permission (it hands us only the tapped contact).
+    // Android does: expo-contacts reads the picked contact back from the contacts DB.
+    if (Platform.OS === "android") {
+      const { status, canAskAgain } = await ExpoContacts.requestPermissionsAsync();
+      console.log('[QA_SOS] contacts permission result | status:', status, '| canAskAgain:', canAskAgain);
+      if (status !== "granted") {
+        if (!canAskAgain) {
+          Alert.alert(
+            "Acceso a contactos",
+            "Bluai necesita acceso a tus contactos para agregar contactos SOS fácilmente. Habilítalo en Configuración.",
+            [
+              { text: "Cancelar", style: "cancel" },
+              { text: "Abrir Configuración", onPress: () => Linking.openSettings() },
+            ]
+          );
+        }
+        return;
       }
-      return;
     }
+
+    console.log('[QA_SOS] pickFromContacts → native picker');
     setLoadingContacts(true);
     try {
-      const { data } = await ExpoContacts.getContactsAsync({
-        fields: [ExpoContacts.Fields.PhoneNumbers, ExpoContacts.Fields.Name],
-      });
-      const withPhone = data.filter(c => c.phoneNumbers && c.phoneNumbers.length > 0);
-      console.log('[QA_SOS] phone contacts loaded:', withPhone.length, 'with phone numbers');
-      setPhoneContacts(withPhone);
-      setContactSearch("");
-      setPickerVisible(true);
+      const contact = await ExpoContacts.presentContactPickerAsync();
+      if (!contact) {
+        console.log('[QA_SOS] native picker canceled');
+        return;
+      }
+      if (!contact.phoneNumbers?.length) {
+        Alert.alert("Sin teléfono", "Ese contacto no tiene número de teléfono. Elige otro o escríbelo a mano.");
+        return;
+      }
+      selectPhoneContact(contact);
     } catch (err) {
-      console.log('[QA_SOS] getContactsAsync error:', err);
-      Alert.alert("Error", "No se pudieron cargar los contactos. Intenta de nuevo.");
+      console.log('[QA_SOS] native picker error:', err);
+      Alert.alert("Error", "No se pudieron abrir tus contactos. Escribe el contacto a mano.");
     } finally {
       setLoadingContacts(false);
     }
   }
 
   function selectPhoneContact(contact: ExpoContacts.Contact) {
-    const fullName = (contact.name ?? "").trim();
+    // On iOS `name` comes from CNContactFormatter, which can return nothing for a
+    // picker contact even though the parts are there — so fall back field by field.
+    const fullName = [
+      contact.name,
+      [contact.firstName, contact.lastName].filter(Boolean).join(" "),
+      contact.nickname,
+      contact.company,
+    ].map((v) => (v ?? "").trim()).find((v) => v.length > 0) ?? "";
     const phone = (contact.phoneNumbers?.[0]?.number ?? "").replace(/\s/g, "");
     console.log('[QA_SOS] contact selected from picker'); // name/phone deliberately not logged — PII
     setNameVal(fullName);
     setPhoneVal(phone);
-    setPickerVisible(false);
     setFormError(null);
   }
 
@@ -267,9 +268,12 @@ export default function SOSContactsScreen() {
       console.log('[QA_SOS] validation failed: name or phone empty');
       return setFormError("Nombre y teléfono son obligatorios.");
     }
-    if (p.length < 5) {
-      console.log('[QA_SOS] validation failed: phone too short');
-      return setFormError("El teléfono debe tener al menos 5 caracteres.");
+    // Count digits only — "+52 (999) 123-4567" is valid as typed. 8–15 is the E.164
+    // range, and covers a Mexican 10-digit number with or without +52.
+    const digits = p.replace(/\D/g, "").length;
+    if (digits < 8 || digits > 15) {
+      console.log('[QA_SOS] validation failed: phone digits out of range:', digits);
+      return setFormError("Ingresa un teléfono válido (8 a 15 dígitos).");
     }
 
     setSaving(true); setFormError(null);
@@ -282,6 +286,13 @@ export default function SOSContactsScreen() {
     try {
       const res = await authFetch(url, { method, body: JSON.stringify(body) });
       console.log('[QA_SOS] save response status:', res.status);
+      // Duplicate number: a validation answer, not a failure — keep the form open with
+      // the reason. (The catch below assumes a network error and refetches/closes.)
+      if (res.status === 409) {
+        const body = await res.json().catch(() => null);
+        setFormError(body?.detail?.message ?? "Ya tienes un contacto con ese número.");
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       const saved: SOSContact = await res.json();
       console.log('[QA_SOS] contact saved:', JSON.stringify({ id: saved.id, link_status: saved.link_status })); // name deliberately not logged — PII
@@ -347,11 +358,30 @@ export default function SOSContactsScreen() {
     }
   }
 
+  function confirmInvite(c: SOSContact) {
+    // A first invite goes straight out; a resend asks first, since it pushes the
+    // invitee again (the backend also enforces a 10-minute cooldown).
+    if (c.link_status !== "invite_sent") return handleInvite(c);
+    Alert.alert(
+      "Reenviar invitación",
+      `Ya invitaste a ${c.name}. ¿Quieres reenviarle la invitación?`,
+      [
+        { text: "Cancelar", style: "cancel" },
+        { text: "Reenviar", onPress: () => handleInvite(c) },
+      ],
+    );
+  }
+
   async function handleInvite(c: SOSContact) {
     console.log('[QA_SOS] sending invite for contact id:', c.id); // name deliberately not logged — PII
     try {
       const res = await authFetch(`${API_BASE_URL}/api/v1/sos-contacts/${c.id}/invite`, { method: "POST" });
       console.log('[QA_SOS] invite response status:', res.status);
+      if (res.status === 429) {
+        const body = await res.json().catch(() => null);
+        Alert.alert("Espera un momento", body?.detail ?? "Ya enviaste esta invitación hace poco.");
+        return;
+      }
       if (!res.ok) throw new Error(String(res.status));
       const { share_url, push_sent } = await res.json();
       console.log('[QA_SOS] invite result | push_sent:', push_sent); // share_url deliberately not logged — equivalent to a bearer token
@@ -509,7 +539,7 @@ export default function SOSContactsScreen() {
                 </View>
                 <View style={{ flexDirection: "row", gap: 10, alignItems: "center" }}>
                   {item.link_status !== "linked" && (
-                    <Pressable onPress={() => handleInvite(item)} hitSlop={8}
+                    <Pressable onPress={() => confirmInvite(item)} hitSlop={8}
                       accessibilityLabel={item.link_status === "invite_sent" ? "Reenviar invitación" : "Invitar"}>
                       <MaterialCommunityIcons
                         name={item.link_status === "invite_sent" ? "email-sync-outline" : "share-outline"}
@@ -623,61 +653,6 @@ export default function SOSContactsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
-      {/* Contact picker modal */}
-      <Modal visible={pickerVisible} animationType="slide" transparent onRequestClose={() => setPickerVisible(false)}>
-        <View style={s.overlay}>
-          <View style={[s.modalCard, { flex: 0, maxHeight: "80%" }]}>
-            <View style={{ flexDirection: "row", alignItems: "center", marginBottom: 12 }}>
-              <Text style={[s.modalTitle, { flex: 1, marginBottom: 0 }]}>Seleccionar contacto</Text>
-              <TouchableOpacity onPress={() => setPickerVisible(false)} hitSlop={10}>
-                <MaterialCommunityIcons name="close" size={22} color="rgba(255,255,255,0.6)" />
-              </TouchableOpacity>
-            </View>
-
-            <TextInput
-              style={[s.input, { marginBottom: 8 }]}
-              placeholder="Buscar por nombre o teléfono…"
-              placeholderTextColor="rgba(255,255,255,0.3)"
-              value={contactSearch}
-              onChangeText={setContactSearch}
-              autoFocus
-              clearButtonMode="while-editing"
-            />
-
-            <FlatList
-              data={phoneContacts.filter(c => {
-                const q = contactSearch.toLowerCase();
-                if (!q) return true;
-                return (c.name ?? "").toLowerCase().includes(q) ||
-                  c.phoneNumbers?.some(p => p.number?.includes(q));
-              })}
-              keyExtractor={(_, i) => String(i)}
-              keyboardShouldPersistTaps="handled"
-              style={{ maxHeight: 400 }}
-              renderItem={({ item }) => (
-                <TouchableOpacity
-                  style={s.pickerRow}
-                  onPress={() => selectPhoneContact(item)}
-                  activeOpacity={0.7}
-                >
-                  <MaterialCommunityIcons name="account-outline" size={22} color={colors.brandCyan} style={{ marginRight: 10 }} />
-                  <View style={{ flex: 1 }}>
-                    <Text style={s.pickerName}>{item.name || "Sin nombre"}</Text>
-                    {item.phoneNumbers?.slice(0, 2).map((p, i) => (
-                      <Text key={i} style={s.pickerPhone}>{p.number}</Text>
-                    ))}
-                  </View>
-                </TouchableOpacity>
-              )}
-              ListEmptyComponent={
-                <Text style={[s.bodyText, { textAlign: "center", marginTop: 20 }]}>
-                  {contactSearch ? "Sin resultados" : "No hay contactos con teléfono"}
-                </Text>
-              }
-            />
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -732,10 +707,6 @@ const s = StyleSheet.create({
                       borderWidth: 1, borderColor: colors.brandCyan, borderRadius: 10,
                       paddingVertical: 10, paddingHorizontal: 14, marginBottom: 16, gap: 8 },
   importButtonText: { color: colors.brandCyan, fontFamily: fonts.poppinsSemiBold, fontSize: 14 },
-  pickerRow:        { flexDirection: "row", alignItems: "center", paddingVertical: 12,
-                      borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.07)" },
-  pickerName:       { color: "white", fontFamily: fonts.poppinsSemiBold, fontSize: 14 },
-  pickerPhone:      { color: "rgba(255,255,255,0.5)", fontFamily: fonts.poppins, fontSize: 13, marginTop: 1 },
   chipsRow:         { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 14 },
   chip:             { borderWidth: 1, borderColor: "rgba(255,255,255,0.25)", borderRadius: 20,
                       paddingVertical: 7, paddingHorizontal: 14 },

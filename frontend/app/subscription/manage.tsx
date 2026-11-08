@@ -178,7 +178,7 @@ export default function ManageSubscriptionScreen() {
                 className="self-start bg-white rounded-full px-4 py-2 flex-row items-center"
                 activeOpacity={0.8}
               >
-                <Text className="text-phase2Buttons font-semibold mr-1">
+                <Text className="text-brand-blue font-semibold mr-1">
                   Añadir
                 </Text>
                 <Ionicons name="chevron-forward" size={16} color="rgb(50, 180, 200)" />

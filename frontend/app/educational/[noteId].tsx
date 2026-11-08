@@ -89,7 +89,7 @@ export default function NoteDetailScreen() {
         </Text>
         <TouchableOpacity
           onPress={() => router.back()}
-          className="mt-6 bg-phase2Buttons px-6 py-3 rounded-xl"
+          className="mt-6 bg-brand-blue px-6 py-3 rounded-xl"
         >
           <Text className="text-white font-semibold">
             Volver
@@ -157,8 +157,8 @@ export default function NoteDetailScreen() {
             </Text>
           </View>
 
-          <View className="bg-phase2Buttons/10 px-3 py-1 rounded-full">
-            <Text className="text-sm text-phase2Buttons capitalize">
+          <View className="bg-brand-blue/10 px-3 py-1 rounded-full">
+            <Text className="text-sm text-brand-blue capitalize">
               {note.category.replace('-', ' ')}
             </Text>
           </View>

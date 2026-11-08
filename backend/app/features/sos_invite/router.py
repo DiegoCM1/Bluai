@@ -3,7 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import get_current_user
 from app.core.database import get_db
-from app.features.users.service import get_user_by_firebase_uid
+from app.features.users.service import get_user_by_firebase_uid, public_display_name
 from app.features.sos_invite.schemas import InviteAcceptResponse, InviteCreateResponse, InvitePreviewResponse
 from app.features.sos_invite.service import accept_invite, create_invite, get_invite_preview, reject_invite
 
@@ -27,9 +27,11 @@ async def invite_contact(
     db: AsyncSession = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    inviter_id = await _resolve_user_id(db, user)
-    display_name = user.get("name", "")
-    return await create_invite(db, inviter_id, display_name, contact_id)
+    db_user = await get_user_by_firebase_uid(db, user.get("uid"))
+    if db_user is None:
+        raise HTTPException(status_code=404, detail="User profile not found. Call POST /api/v1/users/me first.")
+    display_name = public_display_name(db_user, user.get("name"))
+    return await create_invite(db, int(db_user["id"]), display_name, contact_id)
 
 
 @router.get(

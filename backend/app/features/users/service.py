@@ -6,6 +6,28 @@ _ALL_FIELDS = (
     "first_name, last_name, address_1, address_2, zip_code, state, age_range"
 )
 
+# Nombre que ven OTRAS personas (push de SOS, invitaciones) cuando no hay ninguno.
+FALLBACK_PUBLIC_NAME = "Un usuario de Bluai"
+
+
+def public_display_name(db_user, token_name: str | None = None) -> str:
+    """El nombre con el que otra persona reconoce a este usuario.
+
+    Orden: nombre del onboarding (`first_name`/`last_name`, la fuente de verdad) →
+    `display_name` (del token al registrarse) → el claim `name` del token actual →
+    genérico. Sign in with Apple no manda `name` en el token, así que sin el primer
+    paso un SOS de un usuario de Apple llegaba como "Un usuario de BluEye".
+    """
+    full = " ".join(
+        part.strip() for part in (db_user.get("first_name"), db_user.get("last_name"))
+        if part and part.strip()
+    )
+    for candidate in (full, db_user.get("display_name"), token_name):
+        if candidate and candidate.strip():
+            return candidate.strip()
+    return FALLBACK_PUBLIC_NAME
+
+
 # Columnas de `users` que el perfil del onboarding puede escribir. Es una lista blanca,
 # no documentación: los nombres de columna se interpolan en el SQL (no se pueden pasar
 # como parámetro), así que esto es lo que garantiza que solo entren identificadores que

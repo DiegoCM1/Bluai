@@ -35,10 +35,6 @@ type FamilyMemberResponse = {
   email?: string | null;
 };
 
-type CheckoutResponse = {
-  checkout_url: string;
-};
-
 const FALLBACK_PLANS: Plan[] = [
   {
     slug: 'free',
@@ -194,32 +190,13 @@ export async function cancelSubscription(): Promise<Subscription> {
   return toSubscription(data);
 }
 
-export async function createCheckoutSession(
-  planSlug: string,
-  billingPeriod: BillingPeriod,
-  provider: PaymentProvider | 'auto' = 'auto',
-): Promise<string> {
-  const response = await authFetch(`${API_BASE_URL}/api/v1/payments/checkout`, {
-    method: 'POST',
-    body: JSON.stringify({
-      plan_slug: planSlug,
-      billing_period: billingPeriod,
-      provider,
-    }),
-  });
-  const data = await readJsonOrThrow<CheckoutResponse>(response);
-  return data.checkout_url;
-}
-
-export async function openCheckoutSession(
-  planSlug: string,
-  billingPeriod: BillingPeriod,
-  provider: PaymentProvider,
-): Promise<void> {
-  const checkoutUrl = await createCheckoutSession(planSlug, billingPeriod, provider);
-  const supported = await Linking.canOpenURL(checkoutUrl);
-  if (!supported) {
-    throw new Error('No se pudo abrir el checkout en este dispositivo.');
+export async function openMembershipWebsite(planSlug?: string): Promise<void> {
+  const response = await authFetch(`${API_BASE_URL}/api/v1/payments/web/config`);
+  const config = await readJsonOrThrow<{ membership_url: string }>(response);
+  const url = new URL(config.membership_url);
+  if (url.protocol !== 'https:' || url.username || url.password) {
+    throw new Error('El sitio de membresias no esta disponible.');
   }
-  await Linking.openURL(checkoutUrl);
+  if (planSlug === 'safe' || planSlug === 'guard') url.searchParams.set('plan', planSlug);
+  await Linking.openURL(url.toString());
 }

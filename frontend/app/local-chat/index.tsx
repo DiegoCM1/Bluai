@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { MaterialCommunityIcons } from "@expo/vector-icons";
@@ -14,8 +14,8 @@ import { PeerList } from "./_components/PeerList";
 import { StatusHero } from "./_components/StatusHero";
 import { TechLog } from "./_components/TechLog";
 import { useLocalChatContext } from "./_context/LocalChatProvider";
-import { getSubscription } from "../subscription/_services/subscriptionService";
-import { canAccessFeature, getCurrentPlanSlug } from "../subscription/_utils/planAccess";
+import { useCurrentPlan } from '../subscription/_hooks/useCurrentPlan';
+import { canAccessFeature } from "../subscription/_utils/planAccess";
 
 function openChat(peerId: string, nickname: string) {
   router.push({ pathname: "/local-chat/chat", params: { peerId, nickname } });
@@ -24,16 +24,10 @@ function openChat(peerId: string, nickname: string) {
 export default function LocalChatLobbyScreen() {
   const chat = useLocalChatContext();
   const [editing, setEditing] = useState(false);
-  const [blockedByPlan, setBlockedByPlan] = useState(false);
+  const currentPlan = useCurrentPlan();
+  const blockedByPlan = !canAccessFeature(currentPlan, 'bluetooth');
 
-  useEffect(() => {
-    getSubscription()
-      .then((subscription) => {
-        const plan = getCurrentPlanSlug(subscription);
-        setBlockedByPlan(!canAccessFeature(plan, "bluetooth"));
-      })
-      .catch(() => setBlockedByPlan(true));
-  }, []);
+
 
   const connectedName =
     chat.connectedPeers.length === 1

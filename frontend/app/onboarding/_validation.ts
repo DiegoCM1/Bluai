@@ -6,31 +6,14 @@ import type { OnboardingData, ValidationResult } from './_types';
 export const validateStep1 = (data: Partial<OnboardingData>): ValidationResult => {
   const errors: Record<string, string> = {};
 
-  // First name validation
-  if (!data.firstName || data.firstName.trim().length === 0) {
-    errors.firstName = 'El nombre es requerido';
-  } else if (data.firstName.trim().length < 2) {
-    errors.firstName = 'El nombre debe tener al menos 2 caracteres';
-  }
-
-  // Last name validation
-  if (!data.lastName || data.lastName.trim().length === 0) {
-    errors.lastName = 'El apellido es requerido';
-  } else if (data.lastName.trim().length < 2) {
-    errors.lastName = 'El apellido debe tener al menos 2 caracteres';
-  }
-
-  // Address validation
-  if (!data.address1 || data.address1.trim().length === 0) {
-    errors.address1 = 'La dirección es requerida';
-  } else if (data.address1.trim().length < 5) {
+  // Only `state` is required. Name is optional by Guideline 4 (Sign in with Apple
+  // users must not be asked for it); address and ZIP are optional to keep sign-up
+  // minimal. Their format is still checked when the user does type something.
+  if (data.address1 && data.address1.trim().length > 0 && data.address1.trim().length < 5) {
     errors.address1 = 'La dirección debe tener al menos 5 caracteres';
   }
 
-  // ZIP code validation
-  if (!data.zipCode || data.zipCode.trim().length === 0) {
-    errors.zipCode = 'El código postal es requerido';
-  } else if (!/^\d{5}$/.test(data.zipCode)) {
+  if (data.zipCode && data.zipCode.trim().length > 0 && !/^\d{5}$/.test(data.zipCode.trim())) {
     errors.zipCode = 'Debe ser un código postal de 5 dígitos';
   }
 

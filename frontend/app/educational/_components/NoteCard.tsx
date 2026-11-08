@@ -64,8 +64,8 @@ export default function NoteCard({ note }: NoteCardProps) {
             </Text>
           </View>
 
-          <View className="bg-phase2Buttons/10 px-3 py-1 rounded-full">
-            <Text className="text-xs text-phase2Buttons capitalize">
+          <View className="bg-brand-blue/10 px-3 py-1 rounded-full">
+            <Text className="text-xs text-brand-blue capitalize">
               {note.category.replace('-', ' ')}
             </Text>
           </View>

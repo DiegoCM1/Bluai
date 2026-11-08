@@ -227,3 +227,61 @@ def test_delete_contact_user_not_found():
     with _mock_auth(), _mock_user(return_value=None):
         r = client.delete("/api/v1/sos-contacts/1", headers=AUTH_HEADERS)
     assert r.status_code == 404
+
+
+# ── Duplicate-phone guard (service level) ─────────────────────────────────────
+
+import pytest as _pytest
+from unittest.mock import AsyncMock as _AsyncMock, MagicMock as _MagicMock
+from app.features.sos_contacts.service import create_sos_contact, update_sos_contact
+from app.features.sos_contacts.schemas import SOSContactCreate, SOSContactUpdate
+
+
+def _scalar_result(value):
+    m = _MagicMock()
+    m.scalar.return_value = value
+    return m
+
+
+@_pytest.mark.asyncio
+async def test_create_rejects_duplicate_phone_409():
+    db = _AsyncMock()
+    db.execute.side_effect = [_scalar_result("Ana")]  # duplicate lookup finds Ana
+    with _pytest.raises(HTTPException) as exc:
+        await create_sos_contact(db, 42, SOSContactCreate(name="Ana 2", phone="+52 999 123 4567"))
+    assert exc.value.status_code == 409
+    assert exc.value.detail["code"] == "duplicate_phone"
+    assert exc.value.detail["existing_name"] == "Ana"
+    assert db.execute.await_count == 1  # never reached the INSERT
+    db.commit.assert_not_called()
+
+
+@_pytest.mark.asyncio
+async def test_create_allows_new_phone():
+    db = _AsyncMock()
+    inserted = _MagicMock()
+    inserted.mappings.return_value.first.return_value = {"id": 1, "name": "Ana"}
+    db.execute.side_effect = [_scalar_result(None), inserted]
+    out = await create_sos_contact(db, 42, SOSContactCreate(name="Ana", phone="9991234567"))
+    assert out["id"] == 1
+    params = db.execute.await_args_list[0].args[1]
+    assert params == {"user_id": 42, "phone": "9991234567", "exclude_id": -1}
+
+
+@_pytest.mark.asyncio
+async def test_update_phone_excludes_the_contact_itself():
+    db = _AsyncMock()
+    updated = _MagicMock()
+    updated.mappings.return_value.first.return_value = {"id": 7, "phone": "9991234567"}
+    db.execute.side_effect = [_scalar_result(None), updated]
+    await update_sos_contact(db, 7, 42, SOSContactUpdate(phone="9991234567"))
+    assert db.execute.await_args_list[0].args[1]["exclude_id"] == 7
+
+
+@_pytest.mark.asyncio
+async def test_update_rejects_phone_of_another_contact():
+    db = _AsyncMock()
+    db.execute.side_effect = [_scalar_result("Luis")]
+    with _pytest.raises(HTTPException) as exc:
+        await update_sos_contact(db, 7, 42, SOSContactUpdate(phone="999 123 4567"))
+    assert exc.value.status_code == 409

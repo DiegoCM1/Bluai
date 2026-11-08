@@ -1,10 +1,12 @@
-import React, { createContext, useContext, useState, ReactNode } from 'react';
+import React, { createContext, useContext, useEffect, useState, ReactNode } from 'react';
 import { useRouter } from 'expo-router';
 import type { OnboardingData, OnboardingContextValue } from '../_types';
 import { getAuth } from '@react-native-firebase/auth';
 import { saveOnboardingData, markProfileSynced } from '../_services/onboardingService';
 import { track } from '../../../utils/analytics';
 import { pushProfile } from '../../../utils/profileSync';
+import { readAppleName } from '../../../features/auth/appleName';
+import { onboardingBreadcrumb, reportOnboardingFailure } from '../_services/onboardingTelemetry';
 
 const initialData: OnboardingData = {
   firstName: '',
@@ -24,6 +26,32 @@ const OnboardingContext = createContext<OnboardingContextValue | undefined>(unde
 export const OnboardingProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [data, setData] = useState<OnboardingData>(initialData);
   const router = useRouter();
+
+  // Prefill the name from the sign-in provider so nobody retypes it. Apple's name is
+  // persisted at sign-in (Guideline 4); Google's arrives as the Firebase displayName.
+  // Only fills fields the user hasn't touched yet.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const apple = await readAppleName();
+      let givenName = apple?.givenName ?? '';
+      let familyName = apple?.familyName ?? '';
+      if (!givenName && !familyName) {
+        const [first = '', ...rest] = (getAuth().currentUser?.displayName ?? '').trim().split(/\s+/);
+        givenName = first;
+        familyName = rest.join(' ');
+      }
+      if (cancelled || (!givenName && !familyName)) return;
+      setData(prev => ({
+        ...prev,
+        firstName: prev.firstName || givenName,
+        lastName: prev.lastName || familyName,
+      }));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const updateField = (field: keyof OnboardingData, value: string | number) => {
     setData(prev => ({ ...prev, [field]: value }));
@@ -49,7 +77,12 @@ export const OnboardingProvider: React.FC<{ children: ReactNode }> = ({ children
       const uid = getAuth().currentUser?.uid ?? null;
       await saveOnboardingData(data, uid);
 
-      const { ok: saved } = await pushProfile(data);
+      onboardingBreadcrumb('step2: submit start');
+      const { ok: saved, failure } = await pushProfile(data);
+      onboardingBreadcrumb('step2: submit end', { saved, failure });
+      if (failure === 'timeout') {
+        reportOnboardingFailure('submit-timeout', 'step2', {}, 'warning');
+      }
       if (saved) {
         await markProfileSynced();
         console.log('[Onboarding] ✅ perfil guardado en el servidor');
@@ -73,6 +106,9 @@ export const OnboardingProvider: React.FC<{ children: ReactNode }> = ({ children
       // Solo llega aquí si falló la escritura LOCAL: sin eso no hay nada que
       // reintentar después, así que este sí es un error que el usuario debe ver.
       console.error('Error submitting onboarding:', error);
+      reportOnboardingFailure('submit-local-failed', 'step2', {
+        message: error instanceof Error ? error.message : String(error),
+      });
       throw error;
     }
   };

@@ -64,9 +64,8 @@ function MoreScreenContent() {
             label: "Chat offline",
             icon: "access-point-network" as const,
             route: "/local-chat",
-            subtitle: hasBluetooth
-              ? "Bluetooth disponible con tu plan actual"
-              : "Requiere Safe o Guard",
+            // Only nudge when locked — paying users don't need a reminder.
+            ...(hasBluetooth ? {} : { subtitle: "Requiere Safe o Guard" }),
           },
         ]
       : []),
@@ -76,13 +75,10 @@ function MoreScreenContent() {
       route: "/SOSContactsScreen",
       // Plan wording only makes sense where a plan can be bought. With payments
       // off every feature is unlocked, so a subtitle would advertise a tier
-      // this build doesn't sell.
-      ...(PAYMENTS_ENABLED
-        ? {
-            subtitle: hasFamilyPanic
-              ? "Disponible con tu plan actual"
-              : "Requiere Safe o Guard",
-          }
+      // this build doesn't sell. And only when locked — paying users don't need
+      // a reminder.
+      ...(PAYMENTS_ENABLED && !hasFamilyPanic
+        ? { subtitle: "Requiere Safe o Guard" }
         : {}),
     },
     { label: "Feedback", icon: "message-reply-outline", route: "/FeedbackScreen" },

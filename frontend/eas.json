@@ -10,7 +10,8 @@
         "EXPO_PUBLIC_API_URL": "https://backend-blueye-staging.up.railway.app",
         "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "648833411163-mt0gsiiddg7b8614dnujpo6os88n60k2.apps.googleusercontent.com",
         "EXPO_PUBLIC_MIXPANEL_PROJECT_TOKEN": "0f9403626c6da58202dec0ea307ddda8",
-        "EXPO_PUBLIC_SENTRY_DSN": "https://89737012832b41feec4b2bbf7f53d7e1@o4511345134403584.ingest.us.sentry.io/4511345138728960"
+        "EXPO_PUBLIC_SENTRY_DSN": "https://89737012832b41feec4b2bbf7f53d7e1@o4511345134403584.ingest.us.sentry.io/4511345138728960",
+        "SENTRY_DISABLE_AUTO_UPLOAD": "true"
       },
       "android": {
         "buildType": "apk"

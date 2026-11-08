@@ -96,12 +96,20 @@
         {
           "url": "https://sentry.io/",
           "project": "react-native",
-          "organization": "bluai"
+          "organization": "bluai",
+          "experimental_android": {
+            "enableAndroidGradlePlugin": true,
+            "autoUploadProguardMapping": true
+          }
         }
       ],
       [
         "expo-build-properties",
         {
+          "android": {
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true
+          },
           "ios": {
             "useFrameworks": "static",
             "forceStaticLinking": [
